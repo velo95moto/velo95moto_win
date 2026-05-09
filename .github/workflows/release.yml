@@ -49,4 +49,5 @@ jobs:
           releaseBody: 'Новая версия приложения Velo95Moto'
           releaseDraft: false
           prerelease: false
+          updaterJsonKeepUniversal: true   # ← добавь эту строку
           args: --target ${{ matrix.target }}
