@@ -1,0 +1,1095 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="stylesheet" href="styles.css" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Velo95MOTO Offline</title>
+    <script type="module" src="/main.js" defer></script>
+  </head>
+
+  <body>
+    <section class="login-screen" id="login-screen">
+      <form class="login-card" id="login-form">
+        <div class="brand-line">
+          <div class="brand-mark">🛠</div>
+          <div>
+            <h1>Мастерская Вело 95 Мото</h1>
+            <p>Вход в офлайн-программу</p>
+          </div>
+        </div>
+        <label class="hidden-field">
+          <span>Сайт</span>
+          <input id="login-server-url" type="hidden" value="http://localhost:8000" />
+        </label>
+        <label>
+          <span>Логин</span>
+          <input id="login-username" type="text" autocomplete="username" required />
+        </label>
+        <label>
+          <span>Пароль</span>
+          <input id="login-password" type="password" autocomplete="current-password" required />
+        </label>
+        <button class="login-button" type="submit">Войти</button>
+        <p id="login-status">После входа программа скачает актуальные данные с сайта.</p>
+      </form>
+    </section>
+
+    <main class="app-shell is-locked" id="app-shell">
+      <nav class="site-nav">
+        <div class="brand-mark">🛠</div>
+        <div class="brand-title">Мастерская Вело 95 Мото</div>
+        <div class="nav-items" id="nav-items"></div>
+        <div class="nav-spacer"></div>
+        <form class="header-search" id="header-search-form">
+          <input id="header-phone-search" type="search" inputmode="numeric" placeholder="Введите номер" pattern="[0-9]{4,}" />
+          <button type="submit" aria-label="Поиск">⌕</button>
+        </form>
+        <div class="settings-wrapper is-hidden" id="settings-wrapper">
+          <button id="settings-button" class="header-icon-button" type="button" title="Настройки" aria-label="Настройки">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="18" height="18">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.325.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 0 1 1.37.49l1.296 2.247a1.125 1.125 0 0 1-.26 1.431l-1.003.827c-.293.241-.438.613-.43.992a7.723 7.723 0 0 1 0 .255c-.008.378.137.75.43.991l1.004.827c.424.35.534.955.26 1.43l-1.298 2.247a1.125 1.125 0 0 1-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.47 6.47 0 0 1-.22.128c-.331.183-.581.495-.644.869l-.213 1.281c-.09.543-.56.94-1.11.94h-2.594c-.55 0-1.019-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 0 1-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 0 1-1.369-.49l-1.297-2.247a1.125 1.125 0 0 1 .26-1.431l1.004-.827c.292-.24.437-.613.43-.991a6.932 6.932 0 0 1 0-.255c.007-.38-.138-.751-.43-.992l-1.004-.827a1.125 1.125 0 0 1-.26-1.43l1.297-2.247a1.125 1.125 0 0 1 1.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.086.22-.128.332-.183.582-.495.644-.869l.214-1.28Z"/>
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z"/>
+            </svg>
+          </button>
+          <div id="settings-dropdown" class="settings-dropdown is-hidden" role="menu">
+            <a class="settings-dropdown__item" id="sd-shop" role="menuitem" tabindex="-1">
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="16" height="16">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M3.75 7.5h16.5l-1.5 10.5a2.25 2.25 0 0 1-2.23 1.95H7.48A2.25 2.25 0 0 1 5.25 18L3.75 7.5Zm0 0L3 4.5h3m4.5 6v5.25m3-5.25v5.25m3-5.25v5.25"/>
+              </svg>
+              Управление магазином
+            </a>
+            <a class="settings-dropdown__item" id="sd-operator" role="menuitem" tabindex="-1">
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="16" height="16">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M4.5 6.75A2.25 2.25 0 0 1 6.75 4.5h10.5a2.25 2.25 0 0 1 2.25 2.25v10.5a2.25 2.25 0 0 1-2.25 2.25H6.75A2.25 2.25 0 0 1 4.5 17.25zm4.5 3h6m-6 4.5h3m5.25-3a1.5 1.5 0 1 0-3 0a1.5 1.5 0 0 0 3 0Zm-1.5 3v1.5"/>
+              </svg>
+              Кабинет оператора
+            </a>
+            <a class="settings-dropdown__item" id="sd-admin" role="menuitem" tabindex="-1">
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="16" height="16">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M15 19.128a9.38 9.38 0 0 0 2.625.372A9.34 9.34 0 0 0 21 18.879M15 19.128v-3.873a3.375 3.375 0 0 0-3.375-3.375H5.25A2.25 2.25 0 0 0 3 14.13v4.249m12-3.251l1.91-1.104a2.25 2.25 0 0 0 .82-3.074l-.75-1.299a2.25 2.25 0 0 0-3.074-.82L12.75 9.129m2.25 6 2.25 1.299M9.75 7.5a2.625 2.625 0 1 1-5.25 0a2.625 2.625 0 0 1 5.25 0Zm10.5 1.5a2.25 2.25 0 1 1-4.5 0a2.25 2.25 0 0 1 4.5 0Z"/>
+              </svg>
+              Кабинет администратора
+            </a>
+            <a class="settings-dropdown__item" id="sd-timesheet" role="menuitem" tabindex="-1">
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="16" height="16">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M3.75 4.5h16.5A1.5 1.5 0 0 1 21.75 6v12A1.5 1.5 0 0 1 20.25 19.5H3.75A1.5 1.5 0 0 1 2.25 18V6A1.5 1.5 0 0 1 3.75 4.5Zm3.75 4.5h9m-9 3h9m-9 3h5.25"/>
+              </svg>
+              Бухгалтерия
+            </a>
+            <a class="settings-dropdown__item" id="sd-audit" role="menuitem" tabindex="-1">
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" width="16" height="16">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M9 17v-6m3 6V7m3 10v-3m4 6H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h6.172a2 2 0 0 1 1.414.586l6.828 6.828A2 2 0 0 1 20 12.828V18a2 2 0 0 1-2 2Z"/>
+              </svg>
+              Журнал действий
+            </a>
+          </div>
+        </div>
+        <span id="user-chip" class="user-chip"></span>
+        <button id="logout-button" class="header-icon-button" type="button" title="Выйти" aria-label="Выйти">⇥</button>
+        <button id="sync-button" class="round-action sync-hidden" type="button">Синхр.</button>
+      </nav>
+
+      <section class="status-panel">
+        <div>
+          <h1 id="page-title">Добавление записи</h1>
+          <p id="status-text">Локальная база готовится...</p>
+        </div>
+        <button id="refresh-button" type="button">Обновить</button>
+      </section>
+
+      <section class="sync-panel compact-sync">
+        <label>
+          <span>Сайт</span>
+          <input id="server-url" type="url" value="http://localhost:8000" />
+        </label>
+        <label>
+          <span>Логин</span>
+          <input id="username" type="text" autocomplete="username" />
+        </label>
+        <label>
+          <span>Пароль</span>
+          <input id="password" type="password" autocomplete="current-password" />
+        </label>
+      </section>
+
+      <section class="view is-active" id="records-view">
+        <section class="page-hero desktop-list-hero">
+          <div class="page-hero__content">
+            <h1 class="page-hero__title">
+              <span class="page-hero__title-icon">▣</span>
+              Список записей
+            </h1>
+          </div>
+          <div class="page-hero__meta" id="page-hero-meta">Страница 1 из 1</div>
+        </section>
+
+        <div id="page-status" class="page-status" aria-live="polite"></div>
+
+        <section class="toolbar-card page-toolbar">
+          <form id="desktop-search-form" class="records-search-form">
+            <input type="search" inputmode="numeric" id="phone-input" placeholder="Поиск по номеру" />
+            <button type="button" id="toggle-filters">Фильтры</button>
+          </form>
+        </section>
+
+        <section id="filters" class="filters-panel is-hidden">
+          <select id="master-filter">
+            <option value="">Выбрать мастера</option>
+          </select>
+          <select id="collected-filter">
+            <option value="">Забрал: все</option>
+            <option value="yes">Только забрал</option>
+            <option value="no">Только не забрал</option>
+          </select>
+          <input type="date" id="start-date-filter" />
+          <input type="date" id="end-date-filter" />
+          <button type="button" id="reset-filters">Сбросить фильтры</button>
+        </section>
+
+        <section class="table-shell">
+          <div class="table-responsive-shell">
+            <table class="records-site-table">
+              <thead>
+                <tr>
+                  <th><input type="checkbox" id="select-all" /></th>
+                  <th>№</th>
+                  <th>Дата</th>
+                  <th>Техника</th>
+                  <th>Телефон</th>
+                  <th>К оплате</th>
+                  <th>Мастер</th>
+                  <th>Действие</th>
+                </tr>
+              </thead>
+              <tbody id="records-body"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <div id="pagination-wrapper" class="pagination-wrapper">
+          <div id="pagination-summary">Страница 1 из 1</div>
+          <div id="pagination-controls" class="pagination-controls"></div>
+        </div>
+
+        <section class="summary-card">
+          <div class="summary-card__grid">
+            <div class="summary-card__item">
+              <span class="summary-card__label">Общая сумма</span>
+              <span class="summary-card__value"><span id="total-amount">0</span> Р</span>
+            </div>
+            <div class="summary-card__item">
+              <span class="summary-card__label">Мастер</span>
+              <span class="summary-card__value"><span id="total-master-amount">0</span> Р</span>
+            </div>
+            <div class="summary-card__item">
+              <span class="summary-card__label">Запчасти</span>
+              <span class="summary-card__value"><span id="total-parts-amount">0</span> Р</span>
+            </div>
+          </div>
+        </section>
+
+        <section id="selection-summary-floating" class="floating-selection-card">
+          <div class="floating-selection-card__head">
+            Выбрано записей: <span id="selected-records-count">0</span>
+          </div>
+          <div class="floating-selection-card__body">
+            <div><span>Общая сумма</span><strong id="floating-total-amount">0.00 Р</strong></div>
+            <div><span>Мастер</span><strong id="floating-master-amount">0.00 Р</strong></div>
+            <div><span>Запчасти</span><strong id="floating-parts-amount">0.00 Р</strong></div>
+          </div>
+        </section>
+
+        <dialog id="record-details-modal" class="record-dialog">
+          <form method="dialog">
+            <div class="dialog-head">
+              <h2>Подробности записи</h2>
+              <button type="submit">×</button>
+            </div>
+            <div class="dialog-grid">
+              <label><span>Название техники</span><input id="modal-title" readonly /></label>
+              <label><span>Имя</span><input id="modal-name" readonly /></label>
+              <label><span>Номер телефона</span><input id="modal-phone" readonly /></label>
+              <label><span>Запчасти</span><input id="modal-parts" readonly /></label>
+              <label><span>Услуги</span><input id="modal-services" readonly /></label>
+              <label><span>Мастер</span><input id="modal-master" readonly /></label>
+              <label class="switch-row wide-field"><input id="modal-free-repair" type="checkbox" disabled /><span>Бесплатный ремонт по гарантии</span></label>
+              <label class="switch-row wide-field"><input id="modal-master-only" type="checkbox" disabled /><span>Только мастеру</span></label>
+              <div class="record-detail-info wide-field is-hidden" id="modal-master-only-wrap">
+                <div><strong>Режим:</strong> Только мастеру</div>
+                <div><strong>Скидка от магазина:</strong> <span id="modal-discount-amount">0</span> Р</div>
+                <div>за запчасти: <span id="modal-original-parts-amount">0</span> Р</div>
+                <div>за работу: <span id="modal-original-shop-service-amount">0</span> Р</div>
+              </div>
+              <label class="wide-field"><span>Комментарии</span><textarea id="modal-comments" rows="3" readonly></textarea></label>
+            </div>
+          </form>
+        </dialog>
+
+        <dialog id="record-edit-modal" class="record-dialog">
+          <form id="edit-record-form">
+            <div class="dialog-head">
+              <h2>Редактировать запись</h2>
+              <button id="edit-close-button" type="button">×</button>
+            </div>
+            <div class="dialog-grid">
+              <label>
+                <span>Название техники</span>
+                <input id="edit-title" name="title" maxlength="50" list="equipment-options" required />
+              </label>
+              <label>
+                <span>Имя</span>
+                <input id="edit-client-name" name="clientName" maxlength="50" required />
+              </label>
+              <label>
+                <span>Номер телефона</span>
+                <input id="edit-phone" name="phone" type="tel" maxlength="12" required />
+              </label>
+              <label>
+                <span>Мастер</span>
+                <select id="edit-master" name="master" required>
+                  <option value="">— Выберите мастера —</option>
+                </select>
+              </label>
+              <label>
+                <span>Запчасти</span>
+                <div class="money-input">
+                  <input id="edit-parts" name="parts" type="number" min="0" step="500" value="0" />
+                  <b>₽</b>
+                </div>
+              </label>
+              <label>
+                <span>Услуги</span>
+                <div class="money-input">
+                  <input id="edit-services" name="services" type="number" min="0" step="500" value="0" />
+                  <b>₽</b>
+                </div>
+              </label>
+              <label class="switch-row wide-field">
+                <input id="edit-free-repair" name="freeRepair" type="checkbox" />
+                <span>Бесплатный ремонт по гарантии</span>
+              </label>
+              <label class="switch-row wide-field">
+                <input id="edit-master-only" name="masterOnly" type="checkbox" />
+                <span>Только мастеру</span>
+              </label>
+              <label class="wide-field">
+                <span>Комментарии</span>
+                <textarea id="edit-comments" name="comments" rows="3" required></textarea>
+              </label>
+              <div class="client-total-box wide-field edit-total-box">
+                <span>Итого к оплате:</span>
+                <strong><span id="edit-total-amount">0</span> ₽</strong>
+              </div>
+            </div>
+            <div class="dialog-actions">
+              <button type="button" class="secondary-button" id="edit-cancel-button">Закрыть</button>
+              <button type="submit" class="success-button">Сохранить изменения</button>
+            </div>
+          </form>
+        </dialog>
+
+        <dialog id="edit-password-modal" class="record-dialog password-dialog">
+          <form id="edit-password-form">
+            <div class="dialog-head">
+              <h2>Введите пароль для изменения</h2>
+              <button id="edit-password-close" type="button">×</button>
+            </div>
+            <div class="password-dialog-body">
+              <p>Подтвердите доступ паролем оператора, чтобы открыть редактирование записи.</p>
+              <input id="edit-password-input" type="password" autocomplete="off" placeholder="Введите пароль" />
+              <div id="edit-password-error" class="password-error">Неверный пароль.</div>
+            </div>
+            <div class="dialog-actions">
+              <button type="button" class="secondary-button" id="edit-password-cancel">Отмена</button>
+              <button type="submit" class="success-button">Изменить</button>
+            </div>
+          </form>
+        </dialog>
+
+      </section>
+
+      <section class="view" id="add-record-view">
+        <form class="site-card record-form new-record-panel is-visible" id="record-form">
+          <h2>Новая запись</h2>
+          <div class="form-grid">
+            <label>
+              <span>Номер телефона *</span>
+              <input id="phone" name="phone" type="tel" placeholder="+7XXXXXXXXXX" maxlength="12" required />
+            </label>
+            <label>
+              <span>Название техники *</span>
+              <input id="title" name="title" type="text" placeholder="прим. M4" maxlength="50" list="equipment-options" required />
+              <datalist id="equipment-options"></datalist>
+            </label>
+            <label>
+              <span>Имя клиента *</span>
+              <input id="client-name" name="clientName" type="text" placeholder="Клиент" maxlength="50" required />
+            </label>
+            <label>
+              <span>Мастер *</span>
+              <select id="master" name="master" required>
+                <option value="">— Выберите мастера —</option>
+              </select>
+            </label>
+            <label>
+              <span>Цена за работу</span>
+              <div class="money-input">
+                <input id="services" name="services" type="number" min="0" step="500" value="0" />
+                <b>₽</b>
+              </div>
+            </label>
+            <div class="parts-box">
+              <label>
+                <span>Итого запчасти на</span>
+                <div class="money-input">
+                  <input id="parts" name="parts" type="number" min="0" step="500" value="0" readonly />
+                  <b>₽</b>
+                </div>
+              </label>
+              <label>
+                <span>Цена за запчасть</span>
+                <div class="parts-adjust">
+                  <button id="parts-subtract-btn" type="button">−</button>
+                  <input id="parts-adjust" type="tel" inputmode="numeric" placeholder="сумма запчасти" />
+                  <button id="parts-add-btn" type="button">+</button>
+                </div>
+              </label>
+            </div>
+            <label class="switch-row">
+              <input id="free-repair" name="freeRepair" type="checkbox" />
+              <span>по гарантии</span>
+            </label>
+            <label class="switch-row">
+              <input id="master-only" name="masterOnly" type="checkbox" />
+              <span>Только мастеру</span>
+            </label>
+            <label class="wide-field">
+              <span>Комментарий *</span>
+              <textarea id="comments" name="comments" rows="4" placeholder="Описать, что сделано и что установлено" required></textarea>
+            </label>
+          </div>
+
+          <div class="form-actions">
+            <button class="success-button" type="submit">Сохранить</button>
+            <div class="client-total-box">
+              <span>Итого к оплате:</span>
+              <strong><span id="client-total-amount">0</span> ₽</strong>
+            </div>
+          </div>
+        </form>
+      </section>
+
+      <section class="view" id="assembly-view">
+        <section class="assembly-shell">
+          <div class="assembly-header">
+            <h1>Сборка</h1>
+            <span id="assembly-date"></span>
+          </div>
+          <div class="assembly-search-wrap">
+            <span>🔍</span>
+            <input id="assembly-search" type="search" placeholder="Начни вводить имя сборщика..." />
+          </div>
+          <div class="assembly-filter-status" id="assembly-filter-status"></div>
+          <section class="assembly-list" id="assembly-list"></section>
+        </section>
+      </section>
+
+      <section class="view" id="salary-view">
+        <section class="page-hero">
+          <div class="page-hero__content">
+            <h1 class="page-hero__title">
+              <span class="page-hero__title-icon">₽</span>
+              Зарплаты
+            </h1>
+          </div>
+          <div class="page-hero__meta" id="salary-date-meta">Выбери дату</div>
+        </section>
+
+        <section class="toolbar-card mobile-stack salary-toolbar">
+          <form id="salary-filter-form" class="salary-filter-form">
+            <label>
+              <span>Дата</span>
+              <input type="date" id="salary-date-input" />
+            </label>
+            <button type="submit" class="success-button">Показать</button>
+          </form>
+        </section>
+
+        <div id="salary-status" class="page-status" aria-live="polite"></div>
+        <section id="salary-content" class="salary-content"></section>
+      </section>
+
+      <!-- ──────────────────────────────── БУХГАЛТЕРИЯ ── -->
+      <section class="view" id="timesheet-view">
+        <section class="page-hero desktop-list-hero">
+          <div class="page-hero__content">
+            <h1 class="page-hero__title">
+              <span class="page-hero__title-icon">💰</span>
+              Бухгалтерия
+            </h1>
+          </div>
+        </section>
+        <div id="buh-status" class="page-status" aria-live="polite"></div>
+
+        <!-- Дали в долг / Возврат долга -->
+        <div class="debt-panels">
+          <details class="debt-panel" id="debt-issue-panel">
+            <summary class="debt-panel__summary">💸 Дали в долг</summary>
+            <form class="debt-panel__form" id="debt-issue-form" autocomplete="off">
+              <div class="debt-panel__row">
+                <label class="debt-panel__label">Сотрудник</label>
+                <select class="debt-panel__select" id="debt-issue-emp" required>
+                  <option value="">— выберите —</option>
+                </select>
+              </div>
+              <div class="debt-panel__row">
+                <label class="debt-panel__label">Сумма ₽</label>
+                <input type="number" class="debt-panel__input" id="debt-issue-amount" min="1" step="1" placeholder="0" required />
+              </div>
+              <div class="debt-panel__row">
+                <label class="debt-panel__label">Комментарий</label>
+                <input type="text" class="debt-panel__input" id="debt-issue-comment" placeholder="необязательно" />
+              </div>
+              <div class="debt-panel__actions">
+                <button type="submit" class="btn-action success-button">Выдать</button>
+                <span class="debt-panel__result" id="debt-issue-result"></span>
+              </div>
+            </form>
+          </details>
+
+          <details class="debt-panel" id="debt-return-panel">
+            <summary class="debt-panel__summary">↩️ Возврат долга</summary>
+            <form class="debt-panel__form" id="debt-return-form" autocomplete="off">
+              <div class="debt-panel__row">
+                <label class="debt-panel__label">Сотрудник</label>
+                <select class="debt-panel__select" id="debt-return-emp" required>
+                  <option value="">— выберите —</option>
+                </select>
+              </div>
+              <div class="debt-panel__row">
+                <label class="debt-panel__label">Сумма ₽</label>
+                <input type="number" class="debt-panel__input" id="debt-return-amount" min="1" step="1" placeholder="0" required />
+              </div>
+              <div class="debt-panel__row">
+                <label class="debt-panel__label">Комментарий</label>
+                <input type="text" class="debt-panel__input" id="debt-return-comment" placeholder="необязательно" />
+              </div>
+              <div class="debt-panel__actions">
+                <button type="submit" class="btn-action">Принять возврат</button>
+                <span class="debt-panel__result" id="debt-return-result"></span>
+              </div>
+            </form>
+          </details>
+        </div>
+
+        <section class="timesheet-form-card">
+          <div class="timesheet-form-hero ts-section-toggle" id="desktop-add-employee-toggle">
+            <div class="timesheet-form-hero-text">
+              <h1 class="timesheet-form-title">Добавить сотрудника</h1>
+              <p class="timesheet-form-subtitle">ФИО, отдел, должность, оклад и выходной</p>
+            </div>
+            <div class="timesheet-hero-right">
+              <div class="timesheet-form-hero-badge">+ Новый сотрудник</div>
+              <span class="ts-chevron" id="desktop-add-employee-chevron">▾</span>
+            </div>
+          </div>
+
+          <div id="desktop-add-employee-body" class="is-hidden">
+            <form id="employee-form" class="timesheet-form" autocomplete="off">
+              <div class="timesheet-form-grid">
+                <div class="timesheet-form-main">
+                  <section class="timesheet-form-panel">
+                    <h3 class="timesheet-form-panel-title">Основные данные</h3>
+                    <div class="timesheet-grid-two">
+                      <label class="timesheet-field timesheet-field-card">
+                        <span>ФИО <b class="timesheet-required-mark">*</b></span>
+                        <input id="employee-full-name" name="fullName" placeholder="Введите ФИО" required />
+                      </label>
+                    </div>
+                    <div class="timesheet-grid-two timesheet-active-only">
+                      <label class="timesheet-field timesheet-field-card">
+                        <span>Отдел <b class="timesheet-required-mark">*</b></span>
+                        <select id="employee-department" name="department"></select>
+                      </label>
+                      <label class="timesheet-field timesheet-field-card">
+                        <span>Основная должность <b class="timesheet-required-mark">*</b></span>
+                        <select id="employee-primary-position" name="primaryPosition"></select>
+                      </label>
+                    </div>
+                    <div class="timesheet-grid-one">
+                      <label class="timesheet-field timesheet-field-card">
+                        <span>Долг</span>
+                        <div class="money-input">
+                          <input id="employee-debt" name="debt" type="number" min="0" value="0" inputmode="numeric" />
+                          <b>₽</b>
+                        </div>
+                      </label>
+                    </div>
+                  </section>
+
+                  <section class="timesheet-form-panel timesheet-active-only" id="desktop-payment-panel">
+                    <h3 class="timesheet-form-panel-title">Оплата и график</h3>
+                    <p class="timesheet-form-panel-subtitle">Эти поля нужны для расчёта зарплаты и табеля.</p>
+                    <div class="timesheet-grid-two">
+                      <label class="timesheet-field timesheet-field-card" id="employee-salary-wrap">
+                        <span>Оклад</span>
+                        <div class="money-input">
+                          <input id="employee-salary" name="salary" type="number" min="0" value="0" inputmode="numeric" />
+                          <b>₽</b>
+                        </div>
+                      </label>
+                      <label class="timesheet-field timesheet-field-card is-hidden" id="employee-daily-salary-wrap">
+                        <span>ЗП в день</span>
+                        <div class="money-input">
+                          <input id="employee-daily-salary" name="dailySalary" type="number" min="0" value="0" inputmode="numeric" />
+                          <b>₽</b>
+                        </div>
+                      </label>
+                      <label class="timesheet-field timesheet-field-card" id="employee-day-off-wrap">
+                        <span>Выходной <b class="timesheet-required-mark">*</b></span>
+                        <select id="employee-day-off" name="dayOff"></select>
+                      </label>
+                    </div>
+                  </section>
+                </div>
+
+                <div class="timesheet-form-side">
+                  <section class="timesheet-form-panel">
+                    <h3 class="timesheet-form-panel-title">Статус</h3>
+                    <div class="timesheet-field timesheet-toggle-card">
+                      <label>Активность</label>
+                      <label class="pretty-switch">
+                        <input id="employee-is-active" name="isActive" type="checkbox" checked />
+                        <span></span>
+                        Активный сотрудник
+                      </label>
+                    </div>
+                    <div class="timesheet-field timesheet-toggle-card timesheet-active-only">
+                      <label>ЗП в день (фиксированная)</label>
+                      <label class="pretty-switch">
+                        <input id="employee-fixed-daily" name="useFixedDailySalary" type="checkbox" />
+                        <span></span>
+                        Оплата в день, а не в месяц
+                      </label>
+                    </div>
+                    <div class="timesheet-form-note">
+                      Если сотрудник неактивен, остаются только основные поля и долг. Рабочие поля автоматически скрываются.
+                    </div>
+                  </section>
+
+                  <section class="timesheet-form-panel timesheet-rare-panel timesheet-active-only">
+                    <h3 class="timesheet-form-panel-title timesheet-rare-title">Дополнительные поля</h3>
+                    <details class="timesheet-secondary-position-wrap">
+                      <summary>Дополнительная должность</summary>
+                      <div class="timesheet-secondary-position-body">
+                        <label class="timesheet-field">
+                          <select id="employee-secondary-position" name="secondaryPosition"></select>
+                        </label>
+                      </div>
+                    </details>
+                  </section>
+                </div>
+              </div>
+
+              <div id="employee-form-error" class="timesheet-field-errors"></div>
+              <div class="timesheet-form-actions">
+                <button type="submit" class="employee-submit-button">Добавить сотрудника</button>
+              </div>
+            </form>
+          </div>
+        </section>
+
+        <section class="table-shell">
+          <div class="table-responsive-shell">
+            <table class="records-site-table admin-table buh-table">
+              <thead>
+                <tr>
+                  <th>ФИО</th>
+                  <th>Отдел</th>
+                  <th>Должность</th>
+                  <th>Долг ₽</th>
+                  <th>Оклад на дату</th>
+                  <th>Дн. оклад</th>
+                  <th>Текущий оклад</th>
+                  <th>Выходной</th>
+                  <th>Начислено</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="buh-body"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- Модал карточки сотрудника -->
+        <dialog id="emp-settings-modal" class="record-dialog wide-dialog">
+          <div class="dialog-head">
+            <h2 id="emp-modal-title">Сотрудник</h2>
+            <button type="button" id="emp-modal-close">×</button>
+          </div>
+          <input type="hidden" id="emp-modal-id" />
+
+          <!-- Вкладки модала -->
+          <div class="emp-modal-tabs">
+            <button type="button" class="emp-tab-btn is-active" data-tab="salary">Оклад</button>
+            <button type="button" class="emp-tab-btn" data-tab="fields">Данные</button>
+            <button type="button" class="emp-tab-btn" data-tab="positions">Должности</button>
+            <button type="button" class="emp-tab-btn" data-tab="status">Статус</button>
+          </div>
+
+          <!-- Вкладка: Оклад -->
+          <div class="emp-modal-tab-pane" id="emp-tab-salary">
+            <div class="emp-modal-section-title">Изменить оклад</div>
+            <form id="emp-salary-form" class="admin-form emp-tab-form">
+              <label><span>Новый оклад (₽)</span>
+                <div class="money-input"><input type="number" id="emp-new-salary" min="0" step="1" /><b>₽</b></div>
+              </label>
+              <label><span>Действует с</span><input type="date" id="emp-salary-from" /></label>
+              <button type="submit" class="round-action success-button">Изменить оклад</button>
+            </form>
+            <div id="emp-salary-history" class="emp-salary-history"></div>
+          </div>
+
+          <!-- Вкладка: Данные -->
+          <div class="emp-modal-tab-pane is-hidden" id="emp-tab-fields">
+            <div class="emp-modal-section-title">Изменить данные</div>
+            <div class="emp-fields-grid">
+              <div class="emp-field-row">
+                <span class="emp-field-label">ФИО</span>
+                <input type="text" id="emp-field-fullname" class="admin-text-input" />
+                <button type="button" class="btn-action btn-sm" data-field="full_name" data-source="fullname">Сохранить</button>
+              </div>
+              <div class="emp-field-row">
+                <span class="emp-field-label">Отдел</span>
+                <select id="emp-field-department" class="admin-text-input">
+                  <option value="">— Нет —</option>
+                </select>
+                <button type="button" class="btn-action btn-sm" data-field="department" data-source="department">Сохранить</button>
+              </div>
+              <div class="emp-field-row">
+                <span class="emp-field-label">Выходной</span>
+                <select id="emp-field-dayoff" class="admin-text-input">
+                  <option value="">— Нет —</option>
+                </select>
+                <button type="button" class="btn-action btn-sm" data-field="day_off" data-source="dayoff">Сохранить</button>
+              </div>
+              <div class="emp-field-row">
+                <span class="emp-field-label">Дн. оклад (₽)</span>
+                <input type="number" id="emp-field-dailysalary" class="admin-num-input" min="0" step="1" />
+                <button type="button" class="btn-action btn-sm" data-field="daily_salary" data-source="dailysalary">Сохранить</button>
+              </div>
+              <div class="emp-field-row">
+                <span class="emp-field-label">Долг (₽)</span>
+                <input type="number" id="emp-field-debt" class="admin-num-input" min="0" step="1" />
+                <button type="button" class="btn-action btn-sm" data-field="debt" data-source="debt">Сохранить</button>
+              </div>
+              <div class="emp-field-row emp-master-salary-mode is-hidden" id="emp-master-salary-mode-row">
+                <span class="emp-field-label">Режим расчёта</span>
+                <label class="pretty-switch emp-master-salary-switch">
+                  <input id="emp-count-salary-on-record-creation" type="checkbox" />
+                  <span></span>
+                  Считать сумму сразу после создания записи
+                </label>
+                <button type="button" class="btn-action btn-sm" id="emp-save-master-salary-mode">Сохранить</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Вкладка: Должности -->
+          <div class="emp-modal-tab-pane is-hidden" id="emp-tab-positions">
+            <div class="emp-modal-section-title">Должности</div>
+            <form id="emp-positions-form" class="admin-form emp-tab-form">
+              <label><span>Основная должность</span>
+                <select id="emp-pos-primary">
+                  <option value="">— Нет —</option>
+                </select>
+              </label>
+              <label><span>Дополнительная должность</span>
+                <select id="emp-pos-secondary">
+                  <option value="">— Нет —</option>
+                </select>
+              </label>
+              <button type="submit" class="round-action success-button">Сохранить должности</button>
+            </form>
+          </div>
+
+          <!-- Вкладка: Статус -->
+          <div class="emp-modal-tab-pane is-hidden" id="emp-tab-status">
+            <div class="emp-modal-danger-section">
+              <div class="emp-modal-section-title" id="emp-status-title">Статус</div>
+              <p id="emp-status-desc" class="emp-modal-desc"></p>
+              <div id="emp-status-actions"></div>
+            </div>
+          </div>
+
+          <div id="emp-modal-status" class="page-status" aria-live="polite"></div>
+        </dialog>
+
+        <!-- Модал добавления сотрудника -->
+        <dialog id="emp-add-modal" class="record-dialog wide-dialog">
+          <form id="emp-add-form">
+            <div class="dialog-head">
+              <h2>Добавить сотрудника</h2>
+              <button type="button" id="emp-add-modal-close">×</button>
+            </div>
+            <div class="dialog-grid">
+              <label class="wide-field"><span>ФИО *</span><input id="emp-add-fullname" required /></label>
+
+              <!-- Тумблер: активный сотрудник -->
+              <div class="emp-add-toggle-row wide-field">
+                <span class="emp-add-toggle-label">Активный сотрудник</span>
+                <label class="toggle-switch">
+                  <input type="checkbox" id="emp-add-is-active" checked />
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
+
+              <!-- Поля, обязательные для активных -->
+              <div id="emp-add-active-fields" class="emp-add-active-section">
+                <div class="dialog-grid">
+                  <label><span>Отдел *</span>
+                    <select id="emp-add-department"><option value="">— Выберите отдел —</option></select>
+                  </label>
+                  <label><span>Основная должность *</span>
+                    <select id="emp-add-position"><option value="">— Выберите должность —</option></select>
+                  </label>
+                  <label><span>Доп. должность</span>
+                    <select id="emp-add-position2"><option value="">— Нет —</option></select>
+                  </label>
+                  <label><span>Оклад (₽)</span>
+                    <div class="money-input"><input type="number" id="emp-add-salary" min="0" step="1" value="0" /><b>₽</b></div>
+                  </label>
+                  <label id="emp-add-dayoff-wrap"><span>Выходной *</span>
+                    <select id="emp-add-dayoff"><option value="">— Выберите день —</option></select>
+                  </label>
+
+                  <!-- Тумблер: фиксированный дневной оклад -->
+                  <div class="emp-add-toggle-row">
+                    <span class="emp-add-toggle-label">Фиксированный дн. оклад</span>
+                    <label class="toggle-switch">
+                      <input type="checkbox" id="emp-add-use-fixed-daily" />
+                      <span class="toggle-slider"></span>
+                    </label>
+                  </div>
+                  <label id="emp-add-daily-salary-wrap" class="is-hidden"><span>Дн. оклад (₽)</span>
+                    <div class="money-input"><input type="number" id="emp-add-daily-salary" min="0" step="1" value="0" /><b>₽</b></div>
+                  </label>
+                </div>
+              </div>
+
+              <label><span>Начальный долг (₽)</span>
+                <div class="money-input"><input type="number" id="emp-add-debt" min="0" step="1" value="0" /><b>₽</b></div>
+              </label>
+            </div>
+            <div id="emp-add-error" class="admin-warn is-hidden"></div>
+            <div class="dialog-actions">
+              <button type="button" class="secondary-button" id="emp-add-cancel">Отмена</button>
+              <button type="submit" class="success-button">Добавить</button>
+            </div>
+          </form>
+        </dialog>
+      </section>
+
+      <!-- ──────────────────────────────── ЖУРНАЛ ДЕЙСТВИЙ ── -->
+      <section class="view" id="audit-view">
+        <section class="page-hero desktop-list-hero">
+          <div class="page-hero__content">
+            <h1 class="page-hero__title">
+              <span class="page-hero__title-icon">📊</span>
+              Журнал действий
+            </h1>
+          </div>
+        </section>
+        <section class="toolbar-card page-toolbar">
+          <div class="admin-filters">
+            <select id="audit-user-filter"><option value="">Все пользователи</option></select>
+            <select id="audit-action-filter"><option value="">Все действия</option></select>
+            <input type="date" id="audit-date-from" />
+            <input type="date" id="audit-date-to" />
+            <button type="button" id="audit-search-btn" class="round-action">Найти</button>
+            <button type="button" id="audit-reset-btn" class="round-action secondary-button">Сбросить</button>
+          </div>
+        </section>
+        <div id="audit-status" class="page-status" aria-live="polite"></div>
+        <section class="table-shell">
+          <div class="table-responsive-shell">
+            <table class="records-site-table admin-table">
+              <thead>
+                <tr>
+                  <th>Дата</th>
+                  <th>Пользователь</th>
+                  <th>Действие</th>
+                  <th>Описание</th>
+                  <th>IP</th>
+                </tr>
+              </thead>
+              <tbody id="audit-body"></tbody>
+            </table>
+          </div>
+        </section>
+        <div id="audit-pagination" class="pagination-controls"></div>
+      </section>
+
+      <!-- ──────────────────────────────── КАБИНЕТ ОПЕРАТОРА ── -->
+      <section class="view" id="operator-view">
+        <section class="page-hero desktop-list-hero">
+          <div class="page-hero__content">
+            <h1 class="page-hero__title">
+              <span class="page-hero__title-icon">👤</span>
+              Кабинет оператора
+            </h1>
+          </div>
+        </section>
+        <div id="operator-status" class="page-status" aria-live="polite"></div>
+        <div class="admin-two-col">
+          <section class="site-card">
+            <h2>Сборщики</h2>
+            <ul id="operator-collectors" class="admin-name-list"></ul>
+          </section>
+          <section class="site-card">
+            <h2>Мастера</h2>
+            <ul id="operator-masters" class="admin-name-list"></ul>
+          </section>
+        </div>
+        <section class="site-card admin-password-card">
+          <h2>Пароль подтверждения удаления</h2>
+          <div id="operator-pw-default-warn" class="admin-warn is-hidden">
+            Установлен пароль по умолчанию. Рекомендуется сменить.
+          </div>
+          <form id="operator-pw-form" class="admin-form">
+            <label><span>Текущий пароль</span><input type="password" id="op-cur-pw" autocomplete="current-password" /></label>
+            <label><span>Новый пароль</span><input type="password" id="op-new-pw" autocomplete="new-password" /></label>
+            <label><span>Подтверждение</span><input type="password" id="op-confirm-pw" autocomplete="new-password" /></label>
+            <button type="submit" class="success-button">Сменить пароль</button>
+          </form>
+        </section>
+      </section>
+
+      <!-- ──────────────────────────────── УПРАВЛЕНИЕ ПОЛЬЗОВАТЕЛЯМИ ── -->
+      <section class="view" id="users-view">
+        <section class="page-hero desktop-list-hero">
+          <div class="page-hero__content">
+            <h1 class="page-hero__title">
+              <span class="page-hero__title-icon">👥</span>
+              Управление пользователями
+            </h1>
+          </div>
+          <div class="admin-view-controls">
+            <button type="button" id="users-add-btn" class="round-action success-button">+ Добавить пользователя</button>
+          </div>
+        </section>
+        <div id="users-status" class="page-status" aria-live="polite"></div>
+        <section class="table-shell">
+          <div class="table-responsive-shell">
+            <table class="records-site-table admin-table">
+              <thead>
+                <tr>
+                  <th>Логин</th>
+                  <th>Имя</th>
+                  <th>Email</th>
+                  <th>Роль</th>
+                  <th>Мастер</th>
+                  <th>Активен</th>
+                  <th>Действия</th>
+                </tr>
+              </thead>
+              <tbody id="users-body"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <dialog id="users-add-modal" class="record-dialog">
+          <form id="users-add-form">
+            <div class="dialog-head">
+              <h2>Добавить пользователя</h2>
+              <button type="button" id="users-add-close">×</button>
+            </div>
+            <div class="dialog-grid">
+              <label><span>Логин *</span><input id="new-user-username" required /></label>
+              <label><span>Пароль *</span><input id="new-user-password" type="password" required /></label>
+              <label><span>Полное имя</span><input id="new-user-fullname" /></label>
+              <label><span>Email</span><input id="new-user-email" type="email" /></label>
+              <label><span>Роль</span>
+                <select id="new-user-role">
+                  <option value="">— Без роли —</option>
+                </select>
+              </label>
+              <label id="new-user-master-label" class="is-hidden"><span>Мастер</span>
+                <select id="new-user-master"><option value="">— Выберите мастера —</option></select>
+              </label>
+            </div>
+            <div class="dialog-actions">
+              <button type="button" class="secondary-button" id="users-add-cancel">Отмена</button>
+              <button type="submit" class="success-button">Создать</button>
+            </div>
+          </form>
+        </dialog>
+
+        <dialog id="users-role-modal" class="record-dialog">
+          <form id="users-role-form">
+            <div class="dialog-head">
+              <h2>Изменить роль</h2>
+              <button type="button" id="users-role-close">×</button>
+            </div>
+            <div class="dialog-grid">
+              <input type="hidden" id="role-user-id" />
+              <label><span>Роль</span>
+                <select id="role-user-role">
+                  <option value="">— Без роли —</option>
+                </select>
+              </label>
+              <label id="role-master-label" class="is-hidden"><span>Мастер</span>
+                <select id="role-user-master"><option value="">— Выберите мастера —</option></select>
+              </label>
+            </div>
+            <div class="dialog-actions">
+              <button type="button" class="secondary-button" id="users-role-cancel">Отмена</button>
+              <button type="submit" class="success-button">Сохранить</button>
+            </div>
+          </form>
+        </dialog>
+
+        <dialog id="users-pw-modal" class="record-dialog password-dialog">
+          <form id="users-pw-form">
+            <div class="dialog-head">
+              <h2>Сменить пароль</h2>
+              <button type="button" id="users-pw-close">×</button>
+            </div>
+            <div class="password-dialog-body">
+              <input type="hidden" id="pw-user-id" />
+              <input id="pw-new-password" type="password" placeholder="Новый пароль (мин. 4 символа)" />
+              <div id="pw-error" class="password-error is-hidden"></div>
+            </div>
+            <div class="dialog-actions">
+              <button type="button" class="secondary-button" id="users-pw-cancel">Отмена</button>
+              <button type="submit" class="success-button">Сменить</button>
+            </div>
+          </form>
+        </dialog>
+      </section>
+
+      <!-- ──────────────────────────────── УПРАВЛЕНИЕ МАГАЗИНОМ ── -->
+      <section class="view" id="shop-view">
+        <section class="page-hero desktop-list-hero">
+          <div class="page-hero__content">
+            <h1 class="page-hero__title">
+              <span class="page-hero__title-icon">🛒</span>
+              Управление магазином
+            </h1>
+          </div>
+          <div class="admin-view-controls">
+            <button type="button" id="shop-tab-products" class="round-action shop-tab-btn is-active-tab">Товары</button>
+            <button type="button" id="shop-tab-categories" class="round-action secondary-button shop-tab-btn">Категории</button>
+          </div>
+        </section>
+        <div id="shop-status" class="page-status" aria-live="polite"></div>
+
+        <!-- Вкладка: товары -->
+        <div id="shop-products-tab">
+          <div class="admin-view-controls" style="padding: 0 1rem 0.75rem;">
+            <select id="shop-category-filter"><option value="">Все категории</option></select>
+            <button type="button" id="shop-add-btn" class="round-action success-button">+ Добавить товар</button>
+          </div>
+          <section class="table-shell">
+            <div class="table-responsive-shell">
+              <table class="records-site-table admin-table">
+                <thead>
+                  <tr>
+                    <th>Фото</th>
+                    <th>Название</th>
+                    <th>Категория</th>
+                    <th>Цена</th>
+                    <th>В наличии</th>
+                    <th>Действия</th>
+                  </tr>
+                </thead>
+                <tbody id="shop-body"></tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+
+        <!-- Вкладка: категории -->
+        <div id="shop-categories-tab" class="is-hidden">
+          <div class="admin-view-controls" style="padding: 0 1rem 0.75rem;">
+            <button type="button" id="shop-add-cat-btn" class="round-action success-button">+ Добавить категорию</button>
+          </div>
+          <section class="table-shell">
+            <div class="table-responsive-shell">
+              <table class="records-site-table admin-table">
+                <thead>
+                  <tr>
+                    <th>Название</th>
+                    <th>Slug</th>
+                    <th>Действия</th>
+                  </tr>
+                </thead>
+                <tbody id="shop-cat-body"></tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+
+        <!-- Модал категории -->
+        <dialog id="shop-cat-modal" class="record-dialog">
+          <form id="shop-cat-form">
+            <div class="dialog-head">
+              <h2 id="shop-cat-modal-title">Добавить категорию</h2>
+              <button type="button" id="shop-cat-modal-close">×</button>
+            </div>
+            <input type="hidden" id="shop-cat-id" />
+            <div class="dialog-grid">
+              <label class="wide-field"><span>Название *</span><input id="shop-cat-name" required /></label>
+            </div>
+            <div class="dialog-actions">
+              <button type="button" class="secondary-button" id="shop-cat-modal-cancel">Отмена</button>
+              <button type="submit" class="success-button">Сохранить</button>
+            </div>
+          </form>
+        </dialog>
+
+        <dialog id="shop-product-modal" class="record-dialog">
+          <form id="shop-product-form">
+            <div class="dialog-head">
+              <h2 id="shop-modal-title">Добавить товар</h2>
+              <button type="button" id="shop-modal-close">×</button>
+            </div>
+            <input type="hidden" id="shop-product-id" />
+            <div class="dialog-grid">
+              <label><span>Название *</span><input id="shop-product-name" required /></label>
+              <label><span>Категория *</span>
+                <select id="shop-product-category" required>
+                  <option value="">— Выберите категорию —</option>
+                </select>
+              </label>
+              <label><span>Цена (₽) *</span>
+                <div class="money-input">
+                  <input id="shop-product-price" type="number" min="0" step="1" required />
+                  <b>₽</b>
+                </div>
+              </label>
+              <label class="switch-row wide-field">
+                <input id="shop-product-available" type="checkbox" checked />
+                <span>В наличии</span>
+              </label>
+              <label class="wide-field"><span>Описание</span>
+                <textarea id="shop-product-description" rows="3"></textarea>
+              </label>
+              <label class="wide-field"><span>Фото</span>
+                <input id="shop-product-image" type="file" accept="image/*" />
+                <div id="shop-product-image-preview" class="admin-image-preview"></div>
+              </label>
+            </div>
+            <div class="dialog-actions">
+              <button type="button" class="secondary-button" id="shop-modal-cancel">Отмена</button>
+              <button type="submit" class="success-button">Сохранить</button>
+            </div>
+          </form>
+        </dialog>
+      </section>
+
+    </main>
+    <div id="toast-container" aria-live="polite"></div>
+  </body>
+</html>
