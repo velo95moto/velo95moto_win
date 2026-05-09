@@ -120,12 +120,9 @@ function asInt(value) {
   return Number.isFinite(number) && number > 0 ? number : 0;
 }
 
-function setStatus(message) {
-  statusText.textContent = message;
-}
-
 function loadSyncSettings() {
-  const serverUrl = "http://localhost:8000";
+  const saved = localStorage.getItem("serverUrl");
+  const serverUrl = saved || "https://velo95moto.ru";
   const username = localStorage.getItem("username") || "";
   serverUrlInput.value = serverUrl;
   usernameInput.value = username;
@@ -140,7 +137,7 @@ function saveSyncSettings() {
 
 function currentSettings() {
   return {
-    server_url: (serverUrlInput.value || loginServerUrlInput.value || "http://localhost:8000").trim(),
+    server_url: (serverUrlInput.value || loginServerUrlInput.value || "https://velo95moto.ru").trim(),
     username: (usernameInput.value || loginUsernameInput.value).trim(),
     password: passwordInput.value || loginPasswordInput.value,
   };
