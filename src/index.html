@@ -31,7 +31,7 @@
           <input id="login-password" type="password" autocomplete="current-password" required />
         </label>
         <button class="login-button" type="submit">Войти</button>
-        <p id="login-status">После входа программа скачает актуальные данные с сайта.</p>
+        <p id="login-status">Введите пароль, чтобы открыть локальную базу. Синхронизация пойдёт в фоне.</p>
       </form>
     </section>
 
@@ -87,6 +87,10 @@
         </div>
         <span id="user-chip" class="user-chip"></span>
         <button id="logout-button" class="header-icon-button" type="button" title="Выйти" aria-label="Выйти">⇥</button>
+        <div id="sync-indicator" class="sync-indicator sync-indicator--idle" title="Ожидание синхронизации" aria-label="Статус синхронизации">
+          <span class="sync-indicator__dot"></span>
+          <span class="sync-indicator__time"></span>
+        </div>
         <button id="sync-button" class="round-action sync-hidden" type="button">Синхр.</button>
       </nav>
 
@@ -189,16 +193,6 @@
           </div>
         </section>
 
-        <section id="selection-summary-floating" class="floating-selection-card">
-          <div class="floating-selection-card__head">
-            Выбрано записей: <span id="selected-records-count">0</span>
-          </div>
-          <div class="floating-selection-card__body">
-            <div><span>Общая сумма</span><strong id="floating-total-amount">0.00 Р</strong></div>
-            <div><span>Мастер</span><strong id="floating-master-amount">0.00 Р</strong></div>
-            <div><span>Запчасти</span><strong id="floating-parts-amount">0.00 Р</strong></div>
-          </div>
-        </section>
 
         <dialog id="record-details-modal" class="record-dialog">
           <form method="dialog">
@@ -395,6 +389,143 @@
         </section>
       </section>
 
+      <section class="view" id="records-search-view">
+        <section class="page-hero desktop-list-hero">
+          <div class="page-hero__content">
+            <h1 class="page-hero__title" id="records-search-title">Результаты поиска</h1>
+          </div>
+          <div class="page-hero__meta" id="records-search-meta">0 записей</div>
+        </section>
+
+        <div id="records-search-status" class="page-status" aria-live="polite"></div>
+
+        <section class="table-shell">
+          <div class="table-responsive-shell">
+            <table class="records-site-table">
+              <thead>
+                <tr>
+                  <th><input type="checkbox" id="search-select-all" /></th>
+                  <th>№</th>
+                  <th>Дата</th>
+                  <th>Техника</th>
+                  <th>Телефон</th>
+                  <th>К оплате</th>
+                  <th>Мастер</th>
+                  <th>Действие</th>
+                </tr>
+              </thead>
+              <tbody id="search-records-body"></tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+
+      <section class="view" id="assembly-order-view">
+        <section class="assembly-shell assembly-order-shell">
+          <div class="assembly-header">
+            <h1>Заказ сборки</h1>
+          </div>
+          <form class="assembly-order-form site-card" id="assembly-order-form">
+            <label class="assembly-order-name-field">
+              <span>Название заказа / что нужно собрать</span>
+              <input id="assembly-order-name" name="name" type="text" maxlength="255" autocomplete="off" required />
+              <div id="nomenclature-suggest" class="nomenclature-suggest" role="listbox" aria-label="Номенклатура 1С"></div>
+            </label>
+            <label class="assembly-order-quantity">
+              <span>Количество</span>
+              <input id="assembly-order-quantity" name="quantity" type="number" min="1" max="100" value="1" required />
+            </label>
+            <label class="assembly-order-urgent-field">
+              <input id="assembly-order-urgent" name="isUrgent" type="checkbox" />
+              <span>Срочно</span>
+            </label>
+            <div class="assembly-order-actions">
+              <button class="assembly-button" type="submit">Заказ</button>
+            </div>
+          </form>
+          <div id="assembly-order-create-status" class="assembly-order-page-status"></div>
+          <section id="assembly-order-create-list" class="assembly-order-table-wrap"></section>
+        </section>
+      </section>
+
+      <section class="view" id="assembly-orders-view">
+        <section class="assembly-shell assembly-orders-shell">
+          <div class="assembly-header">
+            <h1>Заказы сборок</h1>
+          </div>
+          <section id="assembly-orders-list" class="assembly-order-table-wrap"></section>
+        </section>
+      </section>
+
+      <section class="view" id="advances-view">
+        <section class="adv-shell">
+          <div class="adv-header">
+            <div class="adv-header-top">
+              <h1 class="adv-title">Авансы</h1>
+              <span class="adv-date" id="advances-date"></span>
+            </div>
+          </div>
+
+          <div class="debt-panels adv-debt-panels is-hidden" id="advances-debt-panels">
+            <details class="debt-panel" id="adv-debt-issue-panel">
+              <summary class="debt-panel__summary">💸 Дали в долг</summary>
+              <form class="debt-panel__form" id="adv-debt-issue-form" autocomplete="off">
+                <div class="debt-panel__row">
+                  <label class="debt-panel__label">Сотрудник</label>
+                  <select class="debt-panel__select" id="adv-debt-issue-emp" required>
+                    <option value="">— выберите —</option>
+                  </select>
+                </div>
+                <div class="debt-panel__row">
+                  <label class="debt-panel__label">Сумма ₽</label>
+                  <input type="number" class="debt-panel__input" id="adv-debt-issue-amount" min="1" step="1" placeholder="0" required />
+                </div>
+                <div class="debt-panel__row">
+                  <label class="debt-panel__label">Комментарий</label>
+                  <input type="text" class="debt-panel__input" id="adv-debt-issue-comment" placeholder="необязательно" />
+                </div>
+                <div class="debt-panel__actions">
+                  <button type="submit" class="btn-action success-button">Выдать</button>
+                  <span class="debt-panel__result" id="adv-debt-issue-result"></span>
+                </div>
+              </form>
+            </details>
+
+            <details class="debt-panel" id="adv-debt-return-panel">
+              <summary class="debt-panel__summary">↩️ Возврат долга</summary>
+              <form class="debt-panel__form" id="adv-debt-return-form" autocomplete="off">
+                <div class="debt-panel__row">
+                  <label class="debt-panel__label">Сотрудник</label>
+                  <select class="debt-panel__select" id="adv-debt-return-emp" required>
+                    <option value="">— выберите —</option>
+                  </select>
+                </div>
+                <div class="debt-panel__row">
+                  <label class="debt-panel__label">Сумма ₽</label>
+                  <input type="number" class="debt-panel__input" id="adv-debt-return-amount" min="1" step="1" placeholder="0" required />
+                </div>
+                <div class="debt-panel__row">
+                  <label class="debt-panel__label">Комментарий</label>
+                  <input type="text" class="debt-panel__input" id="adv-debt-return-comment" placeholder="необязательно" />
+                </div>
+                <div class="debt-panel__actions">
+                  <button type="submit" class="btn-action">Принять возврат</button>
+                  <span class="debt-panel__result" id="adv-debt-return-result"></span>
+                </div>
+              </form>
+            </details>
+          </div>
+
+          <div class="adv-search-wrap">
+            <span class="adv-search-icon">⌕</span>
+            <input class="adv-search" id="advances-search" type="search" placeholder="Начни вводить имя сотрудника..." />
+          </div>
+          <div class="adv-filter-status" id="advances-filter-status"></div>
+          <div class="adv-filter-empty" id="advances-filter-empty">По запросу сотрудников не найдено.</div>
+          <section class="adv-list" id="advances-list"></section>
+        </section>
+      </section>
+
       <section class="view" id="salary-view">
         <section class="page-hero">
           <div class="page-hero__content">
@@ -418,6 +549,144 @@
 
         <div id="salary-status" class="page-status" aria-live="polite"></div>
         <section id="salary-content" class="salary-content"></section>
+      </section>
+
+      <section class="view" id="daily-timesheet-view">
+        <section class="daily-timesheet-shell">
+          <div class="daily-timesheet-card">
+            <div class="daily-timesheet-header">
+              <h1 class="daily-timesheet-title">Табель</h1>
+              <p class="daily-timesheet-subtitle">Отметьте сотрудников за выбранную дату, при необходимости укажите аванс и комментарий.</p>
+              <div class="daily-timesheet-date-bar">
+                <form class="daily-timesheet-date-form" id="daily-timesheet-date-form">
+                  <div class="daily-timesheet-date-group">
+                    <label for="daily-timesheet-date">Дата</label>
+                    <input id="daily-timesheet-date" type="date" />
+                  </div>
+                  <button type="submit" class="secondary-button">Открыть дату</button>
+                </form>
+                <div class="daily-timesheet-current-chip">
+                  <span>Заполняете:</span>
+                  <strong id="daily-timesheet-current-date">—</strong>
+                </div>
+              </div>
+              <div id="daily-timesheet-status" class="page-status" aria-live="polite"></div>
+            </div>
+
+            <form id="daily-timesheet-save-form">
+              <div class="daily-timesheet-table-wrap">
+                <table class="daily-timesheet-table">
+                  <thead>
+                    <tr>
+                      <th>Сотрудник</th>
+                      <th>Статус</th>
+                      <th>Опоздание</th>
+                      <th>Аванс</th>
+                      <th>Подработка</th>
+                      <th>Комментарий</th>
+                    </tr>
+                  </thead>
+                  <tbody id="daily-timesheet-body"></tbody>
+                </table>
+              </div>
+              <div class="daily-timesheet-submit">
+                <button type="button" class="btn-daily-report" id="daily-report-button">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M9 17v-6m3 6V7m3 10v-3m-9 3h12M3 4.5A1.5 1.5 0 0 1 4.5 3h15A1.5 1.5 0 0 1 21 4.5v15a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 19.5z"/>
+                  </svg>
+                  Отчёт дня
+                </button>
+                <button type="submit" class="success-button">Сохранить</button>
+              </div>
+            </form>
+          </div>
+        </section>
+      </section>
+
+      <dialog id="daily-report-modal" class="record-dialog daily-report-dialog">
+        <div class="daily-report-modal-wrap">
+          <div class="daily-report-modal-header">
+            <span>Отчёт для кассира</span>
+            <button type="button" id="daily-report-close">×</button>
+          </div>
+          <div id="daily-report-body"></div>
+        </div>
+      </dialog>
+
+      <section class="view" id="journal-view">
+        <section class="summary6-shell">
+          <div class="summary6-card">
+            <div class="summary6-header">
+              <h1 class="summary6-title">Журнал</h1>
+              <p class="summary6-subtitle">Журнал по данным табеля за выбранный месяц.</p>
+
+              <form class="summary6-month-form" id="journal-month-form">
+                <div>
+                  <label for="journal-month">Месяц</label>
+                  <div class="journal-month-picker-wrap">
+                    <input id="journal-month" type="text" readonly autocomplete="off" />
+                    <div class="journal-month-popover" id="journal-month-picker"></div>
+                  </div>
+                </div>
+                <button type="submit" class="secondary-button">Открыть месяц</button>
+              </form>
+
+              <div class="summary6-toolbar-card">
+                <h2 class="summary6-toolbar-title">Фильтры</h2>
+                <div class="summary6-filter-grid">
+                  <div class="summary6-filter-field">
+                    <label for="journal-search">Поиск по ФИО</label>
+                    <input id="journal-search" type="search" placeholder="Начни вводить имя сотрудника" />
+                  </div>
+                  <div class="summary6-filter-field">
+                    <label for="journal-employee-type">Кого показывать</label>
+                    <select id="journal-employee-type">
+                      <option value="active" selected>Только активных</option>
+                      <option value="inactive">Только уволившихся</option>
+                      <option value="all">Всех</option>
+                    </select>
+                  </div>
+                  <div class="summary6-filter-field">
+                    <label for="journal-highlight-filter">Быстрый отбор</label>
+                    <select id="journal-highlight-filter">
+                      <option value="all">Без отбора</option>
+                      <option value="nonnegative">Только без минуса</option>
+                      <option value="debt">Только с долгом</option>
+                      <option value="advance">Только с авансами</option>
+                      <option value="sidejob">Только с подработкой</option>
+                    </select>
+                  </div>
+                </div>
+                <div id="journal-filter-status" class="summary6-filter-status">Показаны все строки.</div>
+              </div>
+
+              <div class="summary6-toolbar-card">
+                <h2 class="summary6-toolbar-title">Сводка по видимым строкам</h2>
+                <div class="summary6-kpi-grid">
+                  <div class="summary6-kpi"><span class="summary6-kpi-label">Сотрудников</span><span id="journal-kpi-employees" class="summary6-kpi-value">0</span></div>
+                  <div class="summary6-kpi"><span class="summary6-kpi-label">Авансы</span><span id="journal-kpi-advances" class="summary6-kpi-value">0 ₽</span></div>
+                  <div class="summary6-kpi"><span class="summary6-kpi-label">Подработка</span><span id="journal-kpi-sidejobs" class="summary6-kpi-value">0 ₽</span></div>
+                  <div class="summary6-kpi"><span class="summary6-kpi-label">Заработал</span><span id="journal-kpi-earned" class="summary6-kpi-value">0 ₽</span></div>
+                  <div class="summary6-kpi"><span class="summary6-kpi-label">Итоговая сумма</span><span id="journal-kpi-total" class="summary6-kpi-value">0 ₽</span></div>
+                </div>
+              </div>
+              <div id="journal-status" class="page-status" aria-live="polite"></div>
+            </div>
+
+            <div class="journal-workspace">
+              <div class="summary6-table-wrap" id="journal-table-wrap">
+                <table class="summary6-table">
+                  <thead id="journal-head"></thead>
+                  <tbody id="journal-body"></tbody>
+                </table>
+              </div>
+              <aside class="journal-side-panel" id="journal-side-panel">
+                <div class="journal-side-empty">Выберите сотрудника в журнале.</div>
+              </aside>
+            </div>
+            <div id="journal-filter-empty" class="summary6-filter-empty">По текущему фильтру сотрудники не найдены.</div>
+          </div>
+        </section>
       </section>
 
       <!-- ──────────────────────────────── БУХГАЛТЕРИЯ ── -->
@@ -1091,5 +1360,16 @@
 
     </main>
     <div id="toast-container" aria-live="polite"></div>
+    <div id="notify-tooltip" role="tooltip"></div>
+    <section id="selection-summary-floating" class="floating-selection-card">
+      <div class="floating-selection-card__head">
+        Выбрано записей: <span id="selected-records-count">0</span>
+      </div>
+      <div class="floating-selection-card__body">
+        <div><span>Общая сумма</span><strong id="floating-total-amount">0.00 Р</strong></div>
+        <div><span>Мастер</span><strong id="floating-master-amount">0.00 Р</strong></div>
+        <div><span>Запчасти</span><strong id="floating-parts-amount">0.00 Р</strong></div>
+      </div>
+    </section>
   </body>
 </html>

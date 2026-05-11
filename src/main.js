@@ -16,6 +16,10 @@ const statusText = document.querySelector("#status-text");
 const pageTitle = document.querySelector("#page-title");
 const recordForm = document.querySelector("#record-form");
 const recordsBody = document.querySelector("#records-body");
+const searchRecordsBody = document.querySelector("#search-records-body");
+const searchRecordsTitle = document.querySelector("#records-search-title");
+const searchRecordsMeta = document.querySelector("#records-search-meta");
+const searchSelectAllCheckbox = document.querySelector("#search-select-all");
 const assemblyList = document.querySelector("#assembly-list");
 const assemblySearch = document.querySelector("#assembly-search");
 const assemblyDate = document.querySelector("#assembly-date");
@@ -24,6 +28,27 @@ const salaryDateMeta = document.querySelector("#salary-date-meta");
 const salaryFilterForm = document.querySelector("#salary-filter-form");
 const salaryContent = document.querySelector("#salary-content");
 const salaryStatus = document.querySelector("#salary-status");
+const dailyTimesheetDateInput = document.querySelector("#daily-timesheet-date");
+const dailyTimesheetDateForm = document.querySelector("#daily-timesheet-date-form");
+const dailyTimesheetCurrentDate = document.querySelector("#daily-timesheet-current-date");
+const dailyTimesheetStatus = document.querySelector("#daily-timesheet-status");
+const dailyTimesheetBody = document.querySelector("#daily-timesheet-body");
+const dailyTimesheetSaveForm = document.querySelector("#daily-timesheet-save-form");
+const dailyReportButton = document.querySelector("#daily-report-button");
+const dailyReportModal = document.querySelector("#daily-report-modal");
+const dailyReportBody = document.querySelector("#daily-report-body");
+const journalMonthForm = document.querySelector("#journal-month-form");
+const journalMonthInput = document.querySelector("#journal-month");
+const journalMonthPicker = document.querySelector("#journal-month-picker");
+const journalSearch = document.querySelector("#journal-search");
+const journalEmployeeType = document.querySelector("#journal-employee-type");
+const journalHighlightFilter = document.querySelector("#journal-highlight-filter");
+const journalFilterStatus = document.querySelector("#journal-filter-status");
+const journalStatus = document.querySelector("#journal-status");
+const journalHead = document.querySelector("#journal-head");
+const journalBody = document.querySelector("#journal-body");
+const journalFilterEmpty = document.querySelector("#journal-filter-empty");
+const journalSidePanel = document.querySelector("#journal-side-panel");
 const refreshButton = document.querySelector("#refresh-button");
 const syncButton = document.querySelector("#sync-button");
 const syncPanel = document.querySelector(".sync-panel");
@@ -75,6 +100,19 @@ const editPartsInput = document.querySelector("#edit-parts");
 const editServicesInput = document.querySelector("#edit-services");
 const editTotalAmount = document.querySelector("#edit-total-amount");
 const assemblyFilterStatus = document.querySelector("#assembly-filter-status");
+const assemblyOrderForm = document.querySelector("#assembly-order-form");
+const assemblyOrderName = document.querySelector("#assembly-order-name");
+const assemblyOrderQuantity = document.querySelector("#assembly-order-quantity");
+const assemblyOrderUrgent = document.querySelector("#assembly-order-urgent");
+const assemblyOrderCreateStatus = document.querySelector("#assembly-order-create-status");
+const assemblyOrderCreateList = document.querySelector("#assembly-order-create-list");
+const assemblyOrdersList = document.querySelector("#assembly-orders-list");
+const advancesDate = document.querySelector("#advances-date");
+const advancesSearch = document.querySelector("#advances-search");
+const advancesFilterStatus = document.querySelector("#advances-filter-status");
+const advancesFilterEmpty = document.querySelector("#advances-filter-empty");
+const advancesList = document.querySelector("#advances-list");
+const advancesDebtPanels = document.querySelector("#advances-debt-panels");
 const employeeForm = document.querySelector("#employee-form");
 const employeeFormError = document.querySelector("#employee-form-error");
 const employeeBody = document.querySelector("#desktop-add-employee-body");
@@ -97,14 +135,37 @@ const state = {
   pendingRecords: 0,
   pendingAssemblies: 0,
   records: [],
+  assemblyOrders: [],
+  employeeAdvances: [],
+  dailyTimesheet: {
+    date: "",
+    employees: [],
+    monthEntries: [],
+  },
+  journal: {
+    month: "",
+    rows: [],
+    days: [],
+    selectedId: "",
+  },
   salaryRecords: [],
+  salaryCache: null,
   filteredRecords: [],
+  headerSearchQuery: "",
   selectedRecordIds: new Set(),
   currentPage: 1,
   perPage: 100,
   datesInitialized: false,
   editingRecordKey: "",
   pendingEditRecordKey: "",
+  network: {
+    online: false,
+    mode: "unknown",
+    reconnectTimer: null,
+    reconnectAttempts: 0,
+    syncInProgress: false,
+    lastHealth: null,
+  },
 };
 
 function todayIsoDate() {
@@ -118,6 +179,9 @@ function formatMoney(value) {
 function asInt(value) {
   const number = Number.parseInt(String(value || "0").replace(/\D/g, ""), 10);
   return Number.isFinite(number) && number > 0 ? number : 0;
+}
+function setStatus(message) {
+  statusText.textContent = message;
 }
 
 function loadSyncSettings() {
@@ -143,7 +207,118 @@ function currentSettings() {
   };
 }
 
+function hasSyncCredentials(settings = currentSettings()) {
+  return Boolean(settings.server_url && settings.username && settings.password);
+}
+
+async function authFingerprint(settings) {
+  const text = `${settings.server_url.trim().toLowerCase()}|${settings.username.trim().toLowerCase()}|${settings.password}`;
+  const bytes = new TextEncoder().encode(text);
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function rememberSuccessfulLogin(settings, bootstrap) {
+  const offlineBootstrap = { ...bootstrap };
+  delete offlineBootstrap.access_token;
+  localStorage.setItem("lastAuthUser", settings.username.trim().toLowerCase());
+  localStorage.setItem("lastBootstrap", JSON.stringify(offlineBootstrap));
+}
+
+async function rememberSuccessfulPassword(settings) {
+  localStorage.setItem("lastAuthHash", await authFingerprint(settings));
+}
+
+async function canOpenOfflineWithPassword(settings) {
+  const savedHash = localStorage.getItem("lastAuthHash") || "";
+  const savedUser = localStorage.getItem("lastAuthUser") || "";
+  if (!savedHash || savedUser !== settings.username.trim().toLowerCase()) return false;
+  return savedHash === await authFingerprint(settings);
+}
+
+function restoreOfflineBootstrap() {
+  try {
+    const raw = localStorage.getItem("lastBootstrap") || "";
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function showLocalUi() {
+  loginScreen.classList.add("is-hidden");
+  appShell.classList.remove("is-locked");
+}
+
+async function runHealthCheck(source = "startup") {
+  const settings = currentSettings();
+  if (!settings.server_url) {
+    state.network.online = false;
+    state.network.mode = "offline";
+    return false;
+  }
+
+  const started = performance.now();
+  try {
+    const result = await invoke("health_check", {
+      serverUrl: settings.server_url,
+      timeoutMs: 1500,
+    });
+    state.network.lastHealth = result;
+    state.network.online = Boolean(result.online);
+    state.network.mode = result.online ? "online" : "offline";
+    const duration = result.duration_ms ?? Math.round(performance.now() - started);
+    console.info(`[offline-startup] health-check source=${source} online=${state.network.online} duration_ms=${duration}`);
+    return state.network.online;
+  } catch (error) {
+    state.network.online = false;
+    state.network.mode = "offline";
+    console.warn(`[offline-startup] health-check source=${source} failed`, error);
+    return false;
+  }
+}
+
+function scheduleReconnectWorker(delayMs = state.network.online ? 120000 : 30000) {
+  window.clearTimeout(state.network.reconnectTimer);
+  state.network.reconnectTimer = window.setTimeout(async () => {
+    state.network.reconnectAttempts += 1;
+    console.info(`[offline-startup] reconnect attempt=${state.network.reconnectAttempts}`);
+    const wasOnline = state.network.online;
+    const isOnline = await runHealthCheck("reconnect");
+    if (isOnline && !wasOnline) {
+      setStatus("Сервер доступен. Синхронизация в фоне...");
+      queueBackgroundSync("reconnect", "Данные синхронизированы после восстановления связи.");
+    }
+    scheduleReconnectWorker(isOnline ? 120000 : 30000);
+  }, delayMs);
+}
+
+function queueBackgroundSync(reason = "background", successMessage = "Данные синхронизированы с сайтом.") {
+  window.setTimeout(() => {
+    syncNow(successMessage, { reason, background: true });
+  }, 0);
+}
+
 const ADMIN_VIEWS = new Set(["timesheet", "audit", "operator", "users", "shop"]);
+
+function desktopNavView(item) {
+  if ((item.id === "advances" || item.label === "Авансы") && item.view === "disabled") {
+    return "advances";
+  }
+  if ((item.id === "timesheet" || item.label === "Табель") && item.view === "disabled") {
+    return "daily-timesheet";
+  }
+  if ((item.id === "journal" || item.label === "Журнал") && item.view === "disabled") {
+    return "journal";
+  }
+  if ((item.id === "assembly_order" || item.label === "Заказ сборки") && item.view === "disabled") {
+    return "assembly-order";
+  }
+  if ((item.id === "assembly_orders" || item.label === "Заказы сборок") && item.view === "disabled") {
+    return "assembly-orders";
+  }
+  return item.view;
+}
 
 function switchView(viewName) {
   if (viewName === "disabled") {
@@ -152,15 +327,27 @@ function switchView(viewName) {
   }
   state.currentView = viewName;
   document.querySelectorAll(".nav-tab").forEach((button) => {
-    button.classList.toggle("is-active", button.dataset.view === viewName || (viewName === "add-record" && button.dataset.view === "records"));
+    button.classList.toggle(
+      "is-active",
+      button.dataset.view === viewName ||
+        (viewName === "records-search" && button.dataset.view === "records") ||
+        (viewName === "add-record" && button.dataset.view === "records") ||
+        (viewName.startsWith("assembly-") && button.dataset.view === "assembly")
+    );
   });
   document.querySelectorAll(".view").forEach((view) => {
     view.classList.toggle("is-active", view.id === `${viewName}-view`);
   });
   const titles = {
     assembly: "Сборка",
+    "assembly-order": "Заказ сборки",
+    "assembly-orders": "Заказы сборок",
+    advances: "Авансы",
+    "records-search": "Поиск записей",
     "add-record": "Добавление записи",
     salary: "Зарплаты",
+    "daily-timesheet": "Табель",
+    journal: "Журнал",
     timesheet: "Бухгалтерия",
     audit: "Журнал действий",
     operator: "Кабинет оператора",
@@ -174,6 +361,16 @@ function switchView(viewName) {
     loadAdminView(viewName);
   } else if (viewName === "salary") {
     loadSalaryView();
+  } else if (viewName === "advances") {
+    loadAdvancesView();
+  } else if (viewName === "daily-timesheet") {
+    loadDailyTimesheetView();
+  } else if (viewName === "journal") {
+    loadJournalView();
+  } else if (viewName === "assembly") {
+    loadAssemblies();
+  } else if (viewName === "assembly-order" || viewName === "assembly-orders") {
+    loadAssemblyOrders();
   }
 }
 
@@ -184,14 +381,17 @@ function renderNavigation() {
   ];
   navItems.innerHTML = "";
   const canAddRecord = hasPermission("records.add_record") && !state.bootstrap?.roles?.is_view_only_role;
+  const hasAssemblyDropdown = nav.some((item) => item.id === "assembly" && item.view === "assembly");
   for (const item of nav) {
+    if (hasAssemblyDropdown && (item.id === "assembly_order" || item.id === "assembly_orders")) continue;
+    const view = desktopNavView(item);
     const button = document.createElement("button");
     button.className = "nav-tab";
     button.type = "button";
-    button.dataset.view = item.view;
+    button.dataset.view = view;
     button.textContent = item.label;
-    button.addEventListener("click", () => switchView(item.view));
-    if (item.view === "records" && canAddRecord) {
+    button.addEventListener("click", () => switchView(view));
+    if (view === "records" && canAddRecord) {
       const wrapper = document.createElement("div");
       wrapper.className = "nav-dropdown";
       const menu = document.createElement("div");
@@ -204,16 +404,39 @@ function renderNavigation() {
       menu.append(addButton);
       wrapper.append(button, menu);
       navItems.append(wrapper);
+    } else if (view === "assembly") {
+      const wrapper = document.createElement("div");
+      wrapper.className = "nav-dropdown";
+      const menu = document.createElement("div");
+      menu.className = "nav-dropdown-menu";
+      const orderButton = document.createElement("button");
+      orderButton.className = "nav-dropdown-item";
+      orderButton.type = "button";
+      orderButton.textContent = "Заказ сборки";
+      orderButton.addEventListener("click", () => switchView("assembly-order"));
+      const ordersButton = document.createElement("button");
+      ordersButton.className = "nav-dropdown-item";
+      ordersButton.type = "button";
+      ordersButton.textContent = "Заказы сборок";
+      ordersButton.addEventListener("click", () => switchView("assembly-orders"));
+      menu.append(orderButton, ordersButton);
+      wrapper.append(button, menu);
+      navItems.append(wrapper);
     } else {
       navItems.append(button);
     }
   }
-  const currentInNav = nav.some((item) => item.view === state.currentView) || state.currentView === "add-record";
+  const currentInNav = nav.some((item) => desktopNavView(item) === state.currentView) || state.currentView === "add-record" || state.currentView.startsWith("assembly-");
   const currentIsAdminView = ADMIN_VIEWS.has(state.currentView);
   if (currentInNav || currentIsAdminView) {
     // Навигация перестроена, но страница не меняется — только восстанавливаем active-класс
     document.querySelectorAll(".nav-tab").forEach((btn) => {
-      btn.classList.toggle("is-active", btn.dataset.view === state.currentView || (state.currentView === "add-record" && btn.dataset.view === "records"));
+      btn.classList.toggle(
+        "is-active",
+        btn.dataset.view === state.currentView ||
+          (state.currentView === "add-record" && btn.dataset.view === "records") ||
+          (state.currentView.startsWith("assembly-") && btn.dataset.view === "assembly")
+      );
     });
   } else {
     switchView("records");
@@ -481,6 +704,20 @@ function formatDate(dateString) {
   return year && month && day ? `${day}.${month}.${year}` : dateString;
 }
 
+function formatDateTime(value) {
+  if (!value) return "—";
+  const normalized = String(value).replace(" ", "T");
+  const date = new Date(normalized);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString("ru-RU", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
 function formatPhone(phone) {
   const digits = String(phone || "").replace(/\D/g, "").slice(-10);
   if (digits.length !== 10) return phone ? `+7${digits}` : "—";
@@ -571,7 +808,7 @@ function buildRecordActions(record) {
     <div class="table-actions">
       <button type="button" class="btn-action btn-action-icon view-details" data-id="${id}" title="Подробнее">▣</button>
       <button type="button" class="btn-action btn-action-icon edit-record" data-id="${id}" title="Изменить">✎</button>
-      <button type="button" class="btn-action btn-action-icon notify-client-btn ${notificationCount > 0 || record.client_notified ? "is-notified" : "is-pending"}" data-id="${id}" title="${escapeHtml(tooltip)}" aria-label="${escapeHtml(tooltip)}">
+      <button type="button" class="btn-action btn-action-icon notify-client-btn ${notificationCount > 0 || record.client_notified ? "is-notified" : "is-pending"}" data-id="${id}" data-notification-tooltip="${escapeHtml(tooltip)}" aria-label="${escapeHtml(tooltip)}">
         <span class="notify-client-btn__bell">🔔</span>
         <span class="notify-client-btn__count ${notificationCount <= 0 ? "is-empty" : ""}">${notificationCount > 0 ? notificationCount : ""}</span>
       </button>
@@ -580,35 +817,123 @@ function buildRecordActions(record) {
   `;
 }
 
+function renderRecordRows(targetBody, records, startIndex = 0) {
+  targetBody.innerHTML = "";
+  if (!records.length) {
+    showTableMessage(targetBody, 8, "Записей не найдено");
+    return;
+  }
+  records.forEach((record, index) => {
+    const id = recordStableId(record);
+    const row = document.createElement("tr");
+    row.innerHTML = `
+      <td><input type="checkbox" class="record-checkbox" data-id="${id}" ${state.selectedRecordIds.has(id) ? "checked" : ""}></td>
+      <td>${startIndex + index + 1}</td>
+      <td>${formatDate(record.record_date)}</td>
+      <td class="text-truncate">${escapeHtml(record.title || "—")}</td>
+      <td class="cell-nowrap"><a href="#" class="record-phone-link whatsapp-link" data-id="${id}" data-phone="7${String(record.phone || "").replace(/\D/g, "").slice(-10)}" data-amount="${Number(record.total_amount || 0)}">${formatPhone(record.phone)}</a></td>
+      <td class="record-total-amount">${formatPaymentAmount(record.total_amount)}</td>
+      <td>${escapeHtml(record.master || "—")}</td>
+      <td>${buildRecordActions(record)}</td>
+    `;
+    targetBody.append(row);
+  });
+}
+
 function renderRecords() {
   const totalPages = Math.max(1, Math.ceil(state.filteredRecords.length / state.perPage));
   const start = (state.currentPage - 1) * state.perPage;
   const pageRecords = state.filteredRecords.slice(start, start + state.perPage);
-  recordsBody.innerHTML = "";
-
-  if (!pageRecords.length) {
-    showTableMessage(recordsBody, 8, "Записей не найдено");
-  } else {
-    pageRecords.forEach((record, index) => {
-      const id = recordStableId(record);
-      const row = document.createElement("tr");
-      row.innerHTML = `
-        <td><input type="checkbox" class="record-checkbox" data-id="${id}" ${state.selectedRecordIds.has(id) ? "checked" : ""}></td>
-        <td>${start + index + 1}</td>
-        <td>${formatDate(record.record_date)}</td>
-        <td class="text-truncate">${escapeHtml(record.title || "—")}</td>
-        <td class="cell-nowrap"><a href="#" class="record-phone-link whatsapp-link" data-id="${id}" data-phone="7${String(record.phone || "").replace(/\D/g, "").slice(-10)}" data-amount="${Number(record.total_amount || 0)}">${formatPhone(record.phone)}</a></td>
-        <td class="record-total-amount">${formatPaymentAmount(record.total_amount)}</td>
-        <td>${escapeHtml(record.master || "—")}</td>
-        <td>${buildRecordActions(record)}</td>
-      `;
-      recordsBody.append(row);
-    });
-  }
+  renderRecordRows(recordsBody, pageRecords, start);
 
   selectAllCheckbox.checked = pageRecords.length > 0 && pageRecords.every((record) => state.selectedRecordIds.has(recordStableId(record)));
   renderPagination(totalPages);
   updateSelectionTotals();
+}
+
+function renderHeaderSearchResults(query) {
+  const rawQuery = String(query || "").trim();
+  state.headerSearchQuery = rawQuery;
+  const digits = rawQuery.replace(/\D/g, "");
+  const results = digits
+    ? state.records.filter((record) => String(record.phone || "").replace(/\D/g, "").includes(digits))
+    : [];
+  if (searchRecordsTitle) {
+    searchRecordsTitle.textContent = results.length
+      ? `Результаты поиска по номеру: ${rawQuery}`
+      : (rawQuery ? `Ничего не найдено по номеру: ${rawQuery}` : "Ничего не найдено");
+  }
+  if (searchRecordsMeta) searchRecordsMeta.textContent = `${results.length} записей`;
+  renderRecordRows(searchRecordsBody, results, 0);
+  if (searchSelectAllCheckbox) {
+    searchSelectAllCheckbox.checked = results.length > 0 && results.every((record) => state.selectedRecordIds.has(recordStableId(record)));
+  }
+  updateSelectionTotals();
+}
+
+function refreshActiveRecordList() {
+  if (state.currentView === "records-search") {
+    renderHeaderSearchResults(state.headerSearchQuery);
+  } else {
+    renderRecords();
+  }
+}
+
+async function handleRecordTableClick(event) {
+  const detailsButton = event.target.closest(".view-details");
+  if (detailsButton) {
+    const record = state.records.find((item) => recordStableId(item) === detailsButton.dataset.id);
+    if (record) showRecordDetails(record);
+    return;
+  }
+
+  const editButton = event.target.closest(".edit-record");
+  if (editButton) {
+    await requestEditPassword(editButton.dataset.id);
+    return;
+  }
+
+  const notifyButton = event.target.closest(".notify-client-btn");
+  if (notifyButton) {
+    const record = state.records.find((item) => recordStableId(item) === notifyButton.dataset.id);
+    if (record) await notifyClient(record, "call");
+    return;
+  }
+
+  const phoneLink = event.target.closest(".whatsapp-link");
+  if (phoneLink) {
+    event.preventDefault();
+    const record = state.records.find((item) => recordStableId(item) === phoneLink.dataset.id);
+    if (!record) return;
+    window.__TAURI__.opener.openUrl(buildWhatsAppUrl(record));
+    notifyClient(record, "whatsapp");
+    return;
+  }
+
+  const collectButton = event.target.closest(".btn-collect");
+  if (collectButton) {
+    try {
+      await invoke("mark_record_collected", { recordKey: collectButton.dataset.id });
+      await loadRecords();
+      if (state.currentView === "records-search") renderHeaderSearchResults(state.headerSearchQuery);
+      setStatus("Запись отмечена как 'Забрал' локально. Синхронизация пойдёт в фоне.");
+      queueBackgroundSync("record-collected", "Запись отмечена как 'Забрал' и синхронизирована с сайтом.");
+    } catch (error) {
+      console.error(error);
+      setStatus(`Не удалось отметить 'Забрал': ${error}`);
+    }
+  }
+}
+
+function handleRecordCheckboxChange(event) {
+  if (!event.target.classList.contains("record-checkbox")) return;
+  const id = event.target.dataset.id;
+  if (event.target.checked) {
+    state.selectedRecordIds.add(id);
+  } else {
+    state.selectedRecordIds.delete(id);
+  }
+  refreshActiveRecordList();
 }
 
 function showRecordDetails(record) {
@@ -616,7 +941,7 @@ function showRecordDetails(record) {
   document.querySelector("#modal-name").value = record.client_name || record.name || "";
   document.querySelector("#modal-phone").value = formatPhone(record.phone);
   document.querySelector("#modal-parts").value = formatMoney(record.parts);
-  document.querySelector("#modal-services").value = formatMoney(record.display_services || record.services);
+  document.querySelector("#modal-services").value = formatMoney(record.master_only ? record.mast_50_5 : record.services);
   document.querySelector("#modal-master").value = record.master || "";
   document.querySelector("#modal-free-repair").checked = Boolean(record.free_repair);
   document.querySelector("#modal-master-only").checked = Boolean(record.master_only);
@@ -672,7 +997,7 @@ async function notifyClient(record, method = "call") {
 }
 
 function logout() {
-  window.clearInterval(state.pollTimer);
+  SyncService.stop();
   state.bootstrap = null;
   state.records = [];
   state.filteredRecords = [];
@@ -687,7 +1012,10 @@ function logout() {
 }
 
 function updateEditTotal() {
-  editTotalAmount.textContent = formatMoney(asInt(editPartsInput.value) + asInt(editServicesInput.value));
+  const isMasterOnly = document.querySelector("#edit-master-only")?.checked;
+  const services = asInt(editServicesInput.value);
+  const parts = asInt(editPartsInput.value);
+  editTotalAmount.textContent = formatMoney(isMasterOnly ? Math.floor(services / 2) : parts + services);
 }
 
 function showEditRecord(record) {
@@ -769,13 +1097,13 @@ async function saveEditedRecord(event) {
         comments: String(formData.get("comments") || "").trim(),
         free_repair: Boolean(formData.get("freeRepair")),
         master_only: Boolean(formData.get("masterOnly")),
-        total_amount: parts + services,
+        total_amount: Boolean(formData.get("masterOnly")) ? Math.floor(services / 2) : parts + services,
       },
     });
     recordEditModal.close();
     await loadRecords();
-    setStatus("Изменения сохранены локально. Отправляю на сайт...");
-    await syncNow("Изменения записи синхронизированы с сайтом.");
+    setStatus("Изменения сохранены локально. Синхронизация пойдёт в фоне.");
+    queueBackgroundSync("record-edit", "Изменения записи синхронизированы с сайтом.");
   } catch (error) {
     console.error(error);
     setStatus(`Не удалось сохранить изменения: ${error}`);
@@ -794,6 +1122,7 @@ async function loadRecords() {
   state.pendingRecords = rows.filter((record) => record.sync_status !== "synced").length;
   updateSyncButton();
   filterRecords();
+  if (state.currentView === "records-search") renderHeaderSearchResults(state.headerSearchQuery);
 }
 
 function groupAssemblies(rows) {
@@ -811,13 +1140,139 @@ function groupAssemblies(rows) {
   return Array.from(grouped.values());
 }
 
+function assemblyOrderStatusLabel(status) {
+  return {
+    assembly: "Сборка",
+    in_progress: "В работе",
+    done: "Сделано",
+    out_of_stock: "Нет в наличии",
+  }[status] || status;
+}
+
+function collectorNames() {
+  return (state.bootstrap?.collectors || []).map((item) => item.value || item.label || item);
+}
+
+function splitAssemblyOrders() {
+  const active = state.assemblyOrders.filter((order) => !order.is_done);
+  const done = state.assemblyOrders.filter((order) => order.status === "done");
+  const outOfStock = state.assemblyOrders.filter((order) => order.status === "out_of_stock");
+  return { active, done, outOfStock };
+}
+
+function renderAssemblyOrderRows(orders, section, startIndex = 1) {
+  const collectors = collectorNames();
+  return orders.map((order, index) => {
+    const number = section === "active" ? startIndex + index : "—";
+    const collector = order.assigned_collector_name
+      ? `<span class="assembly-order-collector">${escapeHtml(order.assigned_collector_name)}</span>`
+      : `<span class="assembly-order-collector-empty">—</span>`;
+    const urgency = order.is_urgent ? `<span class="assembly-order-urgent">Срочно</span>` : "Обычный";
+    let actionHtml = "";
+    if (section === "active") {
+      const assignMenu = collectors.length
+        ? `<span class="assembly-order-assign-menu">${collectors.map((name) => `<button type="button" class="assembly-order-collector-option" data-order-action="assign" data-order-id="${order.local_id}" data-collector-name="${escapeHtml(name)}">${escapeHtml(name)}</button>`).join("")}</span>`
+        : "";
+      const advanceButton = order.status === "assembly"
+        ? `<span class="assembly-order-assign"><button type="button" class="btn-status-assembly" data-order-action="advance" data-order-id="${order.local_id}">Сборка</button>${assignMenu}</span>`
+        : `<button type="button" class="btn-status-in-progress" data-order-action="advance" data-order-id="${order.local_id}">В работе</button>`;
+      actionHtml = `<div class="assembly-order-actions-inline">${advanceButton}<button type="button" class="btn-status-out-of-stock" data-order-action="out_of_stock" data-order-id="${order.local_id}">Нет в наличии</button></div>`;
+    } else {
+      const cls = order.status === "out_of_stock" ? " assembly-order-status-out-of-stock" : "";
+      actionHtml = `<span class="assembly-order-status${cls}">${assemblyOrderStatusLabel(order.status)}</span>`;
+    }
+    return `
+      <tr class="${section === "active" ? "" : "assembly-order-row-done"}">
+        <td class="assembly-order-number">${number}</td>
+        <td>${escapeHtml(order.name)}</td>
+        <td>${collector}</td>
+        <td>${urgency}</td>
+        <td>${formatDateTime(order.created_at)}</td>
+        <td class="text-center">${actionHtml}</td>
+      </tr>
+    `;
+  }).join("");
+}
+
+function renderAssemblyOrderSection(label, orders, section) {
+  if (!orders.length) return "";
+  return `
+    <div class="assembly-order-section-label ${section === "active" ? "is-active" : ""}">${label} &nbsp;(${orders.length})</div>
+    <table class="records-site-table assembly-order-table">
+      <thead>
+        <tr>
+          <th class="assembly-order-number">№</th>
+          <th>Название</th>
+          <th>Сборщик</th>
+          <th>Срочно</th>
+          <th>Дата создания</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>${renderAssemblyOrderRows(orders, section)}</tbody>
+    </table>
+  `;
+}
+
+function renderAssemblyOrders(target) {
+  if (!target) return;
+  const { active, done, outOfStock } = splitAssemblyOrders();
+  if (!active.length && !done.length && !outOfStock.length) {
+    target.innerHTML = `<div class="assembly-order-empty">Активных заказов сборки нет.</div>`;
+    return;
+  }
+  target.innerHTML = [
+    renderAssemblyOrderSection("Активные", active, "active"),
+    renderAssemblyOrderSection("Выполнено", done, "done"),
+    renderAssemblyOrderSection("Нет в наличии", outOfStock, "out_of_stock"),
+  ].join("");
+}
+
+async function loadAssemblyOrders() {
+  state.assemblyOrders = await invoke("list_assembly_orders");
+  renderAssemblyOrders(assemblyOrderCreateList);
+  renderAssemblyOrders(assemblyOrdersList);
+  if (state.currentView === "assembly") {
+    await loadAssemblies();
+  }
+}
+
+async function createAssemblyOrder(event) {
+  event.preventDefault();
+  const name = assemblyOrderName.value.trim();
+  const quantity = Number.parseInt(assemblyOrderQuantity.value || "1", 10);
+  try {
+    const created = await invoke("create_assembly_orders", {
+      order: { name, quantity, is_urgent: assemblyOrderUrgent.checked },
+    });
+    assemblyOrderForm.reset();
+    assemblyOrderQuantity.value = "1";
+    assemblyOrderCreateStatus.textContent = `Создано заказов: ${created}.`;
+    await loadAssemblyOrders();
+  } catch (error) {
+    console.error(error);
+    assemblyOrderCreateStatus.textContent = String(error);
+  }
+}
+
+async function changeAssemblyOrder(orderId, action, collectorName = "") {
+  await invoke("update_assembly_order_status", {
+    orderId: Number(orderId),
+    action,
+    collectorName: collectorName || null,
+  });
+  await loadAssemblyOrders();
+}
+
 async function loadAssemblies() {
-  const rows = await invoke("list_assemblies");
-  state.pendingAssemblies = rows.filter((row) => row.sync_status !== "synced").length;
+  state.assemblyOrders = await invoke("list_assembly_orders");
+  const allRows = await invoke("list_assemblies");
+  const rows = allRows.filter((row) => row.entry_date === todayIsoDate());
+  state.pendingAssemblies = allRows.filter((row) => row.sync_status !== "synced").length;
   updateSyncButton();
   const query = assemblySearch.value.trim().toLowerCase();
   const grouped = new Map(groupAssemblies(rows).map((item) => [item.name, item]));
-  const collectors = (state.bootstrap?.collectors || []).map((item) => item.value || item.label || item);
+  const collectors = collectorNames();
   const knownCollectorNames = new Set(collectors);
   const extraCollectorNames = Array.from(grouped.keys()).filter((name) => !knownCollectorNames.has(name));
   const groups = [...collectors, ...extraCollectorNames]
@@ -841,8 +1296,16 @@ async function loadAssemblies() {
     card.className = "assembly-card";
     card.dataset.collectorName = group.name.toLowerCase();
     const inputId = `assembly-amount-${Math.random().toString(36).slice(2)}`;
+    const pendingOrders = state.assemblyOrders.filter((order) => (
+      order.status === "in_progress" &&
+      !order.is_done &&
+      order.assigned_collector_name === group.name
+    ));
+    const orderOptions = pendingOrders.length
+      ? `${pendingOrders.map((order) => `<option value="${order.local_id}">${escapeHtml(order.name)}</option>`).join("")}<option value="">Без заказа</option>`
+      : `<option value="">Без заказа</option>`;
     const chips = group.rows
-      .map((row) => `<span class="assembly-chip">${formatMoney(row.amount)} ₽ <b>${escapeHtml(row.sync_status)}</b></span>`)
+      .map((row) => `<span class="assembly-chip" id="assembly-chip-${row.local_id}">${formatMoney(row.amount)} ₽ <button type="button" class="assembly-chip-delete" data-assembly-entry-id="${row.local_id}" title="Удалить">×</button></span>`)
       .join("");
     card.innerHTML = `
       <div class="assembly-card-top">
@@ -864,6 +1327,9 @@ async function loadAssemblies() {
           <button type="button" data-assembly-quick="${inputId}" data-amount="200">200</button>
           <button type="button" data-assembly-quick="${inputId}" data-amount="300">300</button>
         </div>
+        <select class="assembly-order-select" aria-label="Заказ сборки">
+          ${orderOptions}
+        </select>
         <button class="assembly-button" type="button" data-assembly-add="${inputId}" data-collector-name="${escapeHtml(group.name)}">+ Сборка</button>
       </div>
     `;
@@ -873,6 +1339,8 @@ async function loadAssemblies() {
 
 async function saveAssemblyForCollector(collectorName, amountInput, button) {
   const amount = asInt(amountInput.value);
+  const orderSelect = button.closest(".assembly-input-row")?.querySelector(".assembly-order-select");
+  const assemblyOrderId = orderSelect?.value ? Number(orderSelect.value) : null;
   if (!collectorName || !amount) {
     setStatus("Укажите сумму сборки.");
     amountInput.focus();
@@ -881,24 +1349,840 @@ async function saveAssemblyForCollector(collectorName, amountInput, button) {
 
   button.disabled = true;
   try {
-    const localId = await invoke("save_assembly", {
+    await invoke("save_assembly", {
       assembly: {
         sync_uuid: crypto.randomUUID(),
         entry_date: todayIsoDate(),
         collector_name: collectorName,
         amount,
         assembly_count: 1,
+        assembly_order_id: assemblyOrderId,
       },
     });
     amountInput.value = "0";
-    await loadAssemblies();
-    setStatus(`Сборка L-${localId} сохранена локально. Отправляю на сайт...`);
-    await syncNow(`Сборка L-${localId} сохранена и синхронизирована с сайтом.`);
+    loadAssemblies(); // без await — чип появляется в фоне, кнопка разблокируется сразу
   } catch (error) {
     console.error(error);
     setStatus(`Ошибка сохранения сборки: ${error}`);
   } finally {
     button.disabled = false;
+  }
+}
+
+async function deleteAssemblyEntry(localId) {
+  await invoke("delete_assembly_entry", { localId: Number(localId), settings: currentSettings() });
+  loadAssemblies(); // без await — список обновляется в фоне
+}
+
+function advanceDateLabel(dateString) {
+  const date = new Date(`${dateString}T12:00:00`);
+  if (Number.isNaN(date.getTime())) return formatDate(dateString);
+  return date.toLocaleDateString("ru-RU", {
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+  });
+}
+
+function readAdvanceEmployeeCache() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem("advanceEmployees") || "[]");
+    return Array.isArray(parsed) ? parsed.filter(Boolean) : [];
+  } catch {
+    return [];
+  }
+}
+
+function uniqueSortedNames(names) {
+  return Array.from(new Set(
+    names
+      .map((name) => String(name || "").trim())
+      .filter(Boolean)
+  )).sort((a, b) => a.localeCompare(b, "ru"));
+}
+
+function advanceEmployeeNames() {
+  const cached = readAdvanceEmployeeCache();
+  const bootstrapNames = [
+    ...(state.bootstrap?.collectors || []).map((item) => item.value || item.label || item),
+    ...(state.bootstrap?.masters || []).map((item) => item.value || item.label || item),
+  ];
+  const historyNames = (state.employeeAdvances || []).map((item) => item.employee_name);
+  return uniqueSortedNames([...cached, ...bootstrapNames, ...historyNames]);
+}
+
+function canIssueEmployeeDebt() {
+  return hasPermission("records.add_employeedebtpayment");
+}
+
+async function refreshAdvanceEmployeeCache() {
+  if (!state.network.online || !getToken()) return;
+  try {
+    const employees = await apiRequest("GET", "mobile/employees/");
+    const names = uniqueSortedNames((employees || []).map((item) => item.full_name || item.employee_name || item.name));
+    if (!names.length) return;
+    localStorage.setItem("advanceEmployees", JSON.stringify(names));
+    if (state.currentView === "advances") renderAdvances();
+  } catch (error) {
+    console.info("[advances] employee cache refresh skipped", error);
+  }
+}
+
+function fillAdvanceDebtSelects(employees) {
+  const issueSelect = document.querySelector("#adv-debt-issue-emp");
+  const returnSelect = document.querySelector("#adv-debt-return-emp");
+  if (!issueSelect || !returnSelect) return;
+
+  issueSelect.innerHTML = `<option value="">— выберите —</option>`;
+  returnSelect.innerHTML = `<option value="">— выберите —</option>`;
+  for (const emp of employees || []) {
+    const label = `${emp.full_name}${Number(emp.debt || 0) ? ` · долг ${formatMoney(emp.debt)} ₽` : ""}`;
+    const issueOption = document.createElement("option");
+    issueOption.value = emp.id;
+    issueOption.textContent = label;
+    issueSelect.append(issueOption);
+
+    const returnOption = document.createElement("option");
+    returnOption.value = emp.id;
+    returnOption.textContent = label;
+    returnOption.dataset.debt = emp.debt || 0;
+    returnOption.disabled = Number(emp.debt || 0) <= 0;
+    returnSelect.append(returnOption);
+  }
+}
+
+async function loadAdvanceDebtPanels() {
+  if (!advancesDebtPanels) return;
+  const allowed = canIssueEmployeeDebt();
+  advancesDebtPanels.classList.toggle("is-hidden", !allowed);
+  if (!allowed || !state.network.online || !getToken()) return;
+  try {
+    const data = await apiRequest("GET", "mobile/employees/debt/");
+    fillAdvanceDebtSelects(data.employees || []);
+  } catch (error) {
+    console.info("[advances] debt panels unavailable", error);
+  }
+}
+
+function groupTodayAdvances() {
+  const today = todayIsoDate();
+  const grouped = new Map();
+  for (const row of state.employeeAdvances || []) {
+    if (row.advance_date !== today) continue;
+    const name = row.employee_name || "";
+    if (!grouped.has(name)) grouped.set(name, { total: 0, rows: [] });
+    const group = grouped.get(name);
+    group.total += Number(row.amount || 0);
+    group.rows.push(row);
+  }
+  return grouped;
+}
+
+function renderAdvances() {
+  if (!advancesList) return;
+  const query = (advancesSearch?.value || "").trim().toLowerCase();
+  const grouped = groupTodayAdvances();
+  const names = advanceEmployeeNames();
+  const groups = names
+    .map((name) => ({ name, ...(grouped.get(name) || { total: 0, rows: [] }) }))
+    .filter((item) => item.name.toLowerCase().includes(query));
+
+  if (advancesDate) advancesDate.textContent = advanceDateLabel(todayIsoDate());
+  if (advancesFilterStatus) {
+    advancesFilterStatus.textContent = query ? `Показано ${groups.length} из ${names.length}` : "";
+  }
+  if (advancesFilterEmpty) {
+    advancesFilterEmpty.style.display = groups.length ? "none" : "block";
+    advancesFilterEmpty.textContent = names.length ? "По запросу сотрудников не найдено." : "Нет активных сотрудников.";
+  }
+
+  advancesList.innerHTML = groups.map((group, index) => {
+    const inputId = `advance-input-${index}`;
+    const chips = group.rows.map((row) => `
+      <span class="adv-chip">
+        ${formatMoney(row.amount)} ₽
+        <button type="button" class="adv-chip-delete" data-advance-id="${row.local_id}" title="Удалить аванс">×</button>
+      </span>
+    `).join("");
+    return `
+      <article class="adv-card" data-employee-name="${escapeHtml(group.name)}">
+        <div class="adv-card-top">
+          <div class="adv-name">${escapeHtml(group.name)}</div>
+          <div class="adv-total-wrap">
+            <span class="adv-total-label">Итого:</span>
+            <span class="adv-total-value ${group.total ? "" : "is-zero"}">${formatMoney(group.total)} ₽</span>
+          </div>
+        </div>
+        <div class="adv-history">${chips}</div>
+        <div class="adv-input-row">
+          <div class="adv-input-wrap">
+            <input id="${inputId}" class="adv-input" type="number" min="1" step="100" placeholder="Сумма аванса" />
+            <span class="adv-input-suffix">₽</span>
+          </div>
+          <div class="adv-quick-btns">
+            <button type="button" class="adv-quick-btn" data-advance-quick="${inputId}" data-amount="500">500</button>
+            <button type="button" class="adv-quick-btn" data-advance-quick="${inputId}" data-amount="1000">1 000</button>
+          </div>
+          <button type="button" class="adv-add-btn" data-advance-add="${inputId}" data-employee-name="${escapeHtml(group.name)}">+ Записать</button>
+        </div>
+      </article>
+    `;
+  }).join("");
+}
+
+async function loadAdvancesView() {
+  if (advancesDate) advancesDate.textContent = advanceDateLabel(todayIsoDate());
+  try {
+    state.employeeAdvances = await invoke("list_employee_advances");
+    renderAdvances();
+    refreshAdvanceEmployeeCache();
+    loadAdvanceDebtPanels();
+  } catch (error) {
+    console.error(error);
+    setStatus(`Не удалось открыть авансы: ${error}`);
+  }
+}
+
+async function saveAdvanceForEmployee(employeeName, input, button) {
+  const amount = asInt(input.value);
+  if (!employeeName || !amount) {
+    setStatus("Укажите сумму аванса.");
+    input.focus();
+    return;
+  }
+
+  button.disabled = true;
+  try {
+    await invoke("save_employee_advance", {
+      employeeName,
+      amount,
+      advanceDate: todayIsoDate(),
+    });
+    input.value = "";
+    state.employeeAdvances = await invoke("list_employee_advances");
+    renderAdvances();
+    setStatus("Аванс сохранён локально.");
+  } catch (error) {
+    console.error(error);
+    setStatus(`Ошибка сохранения аванса: ${error}`);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function initAdvanceDebtPanels() {
+  const issueForm = document.querySelector("#adv-debt-issue-form");
+  const returnForm = document.querySelector("#adv-debt-return-form");
+
+  issueForm?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const resultEl = document.querySelector("#adv-debt-issue-result");
+    resultEl.textContent = "";
+    resultEl.className = "debt-panel__result";
+    const employeeId = parseInt(document.querySelector("#adv-debt-issue-emp").value, 10);
+    const amount = parseInt(document.querySelector("#adv-debt-issue-amount").value, 10);
+    const comment = document.querySelector("#adv-debt-issue-comment").value.trim();
+    if (!employeeId || !amount || amount <= 0) return;
+    try {
+      const data = await apiRequest("POST", "mobile/employees/debt/", { action_type: "issue_debt", employee_id: employeeId, amount, comment });
+      showToast(data.message);
+      issueForm.reset();
+      document.querySelector("#adv-debt-issue-panel").open = false;
+      await loadAdvanceDebtPanels();
+    } catch (error) {
+      resultEl.textContent = String(error);
+      resultEl.classList.add("is-error");
+    }
+  });
+
+  returnForm?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const resultEl = document.querySelector("#adv-debt-return-result");
+    resultEl.textContent = "";
+    resultEl.className = "debt-panel__result";
+    const empSelect = document.querySelector("#adv-debt-return-emp");
+    const employeeId = parseInt(empSelect.value, 10);
+    const amount = parseInt(document.querySelector("#adv-debt-return-amount").value, 10);
+    const comment = document.querySelector("#adv-debt-return-comment").value.trim();
+    if (!employeeId || !amount || amount <= 0) return;
+    const currentDebt = parseInt(empSelect.selectedOptions[0]?.dataset.debt || "0", 10);
+    if (currentDebt > 0 && amount > currentDebt) {
+      resultEl.textContent = `Нельзя вернуть больше долга (${currentDebt} ₽)`;
+      resultEl.classList.add("is-error");
+      return;
+    }
+    try {
+      const data = await apiRequest("POST", "mobile/employees/debt/", { action_type: "debt_payment", employee_id: employeeId, amount, comment });
+      showToast(data.message);
+      returnForm.reset();
+      document.querySelector("#adv-debt-return-panel").open = false;
+      await loadAdvanceDebtPanels();
+    } catch (error) {
+      resultEl.textContent = String(error);
+      resultEl.classList.add("is-error");
+    }
+  });
+}
+
+async function deleteAdvance(localId) {
+  await invoke("delete_employee_advance", { localId: Number(localId) });
+  state.employeeAdvances = await invoke("list_employee_advances");
+  renderAdvances();
+  setStatus("Аванс удалён локально.");
+}
+
+function monthValue(dateString) {
+  return String(dateString || todayIsoDate()).slice(0, 7);
+}
+
+function dayOffMatches(dayOff, dateString) {
+  const map = {
+    monday: 1,
+    tuesday: 2,
+    wednesday: 3,
+    thursday: 4,
+    friday: 5,
+    saturday: 6,
+    sunday: 0,
+  };
+  if (!dayOff || !(dayOff in map)) return false;
+  const date = new Date(`${dateString}T12:00:00`);
+  return !Number.isNaN(date.getTime()) && date.getDay() === map[dayOff];
+}
+
+function dailyEntryFor(employee) {
+  return employee.entry || {};
+}
+
+function dailyStatusFor(employee) {
+  const entry = dailyEntryFor(employee);
+  if (entry.status) return entry.status;
+  if (employee.default_status) return employee.default_status;
+  return dayOffMatches(employee.day_off, state.dailyTimesheet.date) ? "weekend" : "present";
+}
+
+function dailyAdvanceFor(employee) {
+  const entry = dailyEntryFor(employee);
+  if (entry.id) return Number(entry.advance || 0);
+  const employeeName = employee.employee_name || employee.full_name || "";
+  const localAdvance = (state.employeeAdvances || [])
+    .filter((item) => item.advance_date === state.dailyTimesheet.date && item.employee_name === employeeName)
+    .reduce((sum, item) => sum + Number(item.amount || 0), 0);
+  return localAdvance;
+}
+
+function dailyLateCount(employee) {
+  const employeeId = Number(employee.employee_id || employee.id);
+  return (state.dailyTimesheet.monthEntries || []).filter((entry) => (
+    Number(entry.employee || entry.employee_id) === employeeId &&
+    entry.is_late &&
+    entry.entry_date !== state.dailyTimesheet.date
+  )).length + (dailyEntryFor(employee).is_late ? 1 : 0);
+}
+
+function renderDailyTimesheet() {
+  if (!dailyTimesheetBody) return;
+  const employees = state.dailyTimesheet.employees || [];
+  dailyTimesheetDateInput.value = state.dailyTimesheet.date || todayIsoDate();
+  dailyTimesheetDateInput.max = todayIsoDate();
+  dailyTimesheetCurrentDate.textContent = formatDate(state.dailyTimesheet.date);
+
+  if (!employees.length) {
+    dailyTimesheetBody.innerHTML = `<tr class="empty-row"><td colspan="6">Табель пока не заполнен. Сначала добавьте сотрудников.</td></tr>`;
+    return;
+  }
+
+  dailyTimesheetBody.innerHTML = employees.map((employee) => {
+    const id = employee.employee_id || employee.id;
+    const name = employee.employee_name || employee.full_name || "—";
+    const positions = employee.positions || "";
+    const department = employee.department_label || employee.department || "";
+    const status = dailyStatusFor(employee);
+    const entry = dailyEntryFor(employee);
+    const isLate = Boolean(entry.is_late);
+    const lateCount = dailyLateCount(employee);
+    const advance = dailyAdvanceFor(employee);
+    const sideJob = Number(entry.side_job || 0);
+    const note = entry.note || "";
+    return `
+      <tr data-employee-id="${id}" data-employee-name="${escapeHtml(name)}">
+        <td>
+          <div class="daily-timesheet-name">${escapeHtml(name)}</div>
+          <div class="daily-timesheet-role">${escapeHtml([positions, department].filter(Boolean).join(" · "))}</div>
+        </td>
+        <td data-label="Статус">
+          <div class="daily-timesheet-toggle">
+            <input id="status_present_${id}" type="radio" name="status_${id}" value="present" ${status === "present" ? "checked" : ""}>
+            <label class="daily-timesheet-option present" for="status_present_${id}">✓</label>
+            <input id="status_weekend_${id}" type="radio" name="status_${id}" value="weekend" ${status === "weekend" ? "checked" : ""}>
+            <label class="daily-timesheet-option weekend" for="status_weekend_${id}">В</label>
+          </div>
+        </td>
+        <td data-label="Опоздание">
+          <button type="button" class="btn-late-toggle ${isLate ? "is-active" : ""}" data-late-toggle="${id}" ${status !== "present" ? "disabled" : ""} title="${lateCount >= 3 ? `Опоздание #${lateCount + 1} — штраф 300 р.` : `Опоздание (${lateCount}/3 без штрафа)`}">
+            Опоздание
+            <span class="late-badge">${lateCount}</span>
+          </button>
+        </td>
+        <td data-label="Аванс">
+          <div class="daily-money-input">
+            <input class="daily-money-field js-daily-money" data-kind="advance" inputmode="numeric" value="${advance || 0}" autocomplete="off">
+            <span>₽</span>
+          </div>
+        </td>
+        <td data-label="Подработка">
+          <div class="daily-money-input">
+            <input class="daily-money-field js-daily-money" data-kind="side_job" inputmode="numeric" value="${sideJob || 0}" autocomplete="off">
+            <span>₽</span>
+          </div>
+        </td>
+        <td data-label="Комментарий">
+          <input class="daily-note-input" value="${escapeHtml(note)}" placeholder="Комментарий">
+        </td>
+      </tr>
+    `;
+  }).join("");
+}
+
+async function loadDailyTimesheetView() {
+  const selectedDate = dailyTimesheetDateInput?.value || state.dailyTimesheet.date || todayIsoDate();
+  state.dailyTimesheet.date = selectedDate;
+  const hasCached = state.dailyTimesheet.employees.length > 0 && state.dailyTimesheet._cachedDate === selectedDate;
+  if (hasCached) {
+    renderDailyTimesheet();
+    Promise.all([
+      apiRequest("GET", `mobile/timesheet/daily/?date=${selectedDate}`),
+      apiRequest("GET", `mobile/timesheet/monthly/?month=${monthValue(selectedDate)}`),
+      invoke("list_employee_advances"),
+    ]).then(([dayData, monthData, localAdvances]) => {
+      state.dailyTimesheet.date = dayData.date || selectedDate;
+      state.dailyTimesheet._cachedDate = dayData.date || selectedDate;
+      state.dailyTimesheet.employees = dayData.employees || [];
+      state.dailyTimesheet.monthEntries = monthData.entries || [];
+      state.employeeAdvances = localAdvances || [];
+      renderDailyTimesheet();
+      setAdminStatus(dailyTimesheetStatus, "");
+    }).catch(() => {});
+    return;
+  }
+  setAdminStatus(dailyTimesheetStatus, "Загружаю табель...");
+  try {
+    const [dayData, monthData, localAdvances] = await Promise.all([
+      apiRequest("GET", `mobile/timesheet/daily/?date=${selectedDate}`),
+      apiRequest("GET", `mobile/timesheet/monthly/?month=${monthValue(selectedDate)}`),
+      invoke("list_employee_advances"),
+    ]);
+    state.dailyTimesheet.date = dayData.date || selectedDate;
+    state.dailyTimesheet._cachedDate = dayData.date || selectedDate;
+    state.dailyTimesheet.employees = dayData.employees || [];
+    state.dailyTimesheet.monthEntries = monthData.entries || [];
+    state.employeeAdvances = localAdvances || [];
+    renderDailyTimesheet();
+    setAdminStatus(dailyTimesheetStatus, "");
+  } catch (error) {
+    console.error(error);
+    setAdminStatus(dailyTimesheetStatus, `Ошибка загрузки табеля: ${error}`, true);
+  }
+}
+
+function normalizeDailyMoneyInput(input) {
+  const value = String(input.value || "").replace(/\D/g, "");
+  input.value = value ? String(parseInt(value, 10)) : "0";
+}
+
+function syncDailyLateButton(row) {
+  const present = row.querySelector(`input[value="present"]`)?.checked;
+  const button = row.querySelector(".btn-late-toggle");
+  if (!button) return;
+  button.disabled = !present;
+  if (!present) button.classList.remove("is-active");
+}
+
+function collectDailyTimesheetRows() {
+  return Array.from(dailyTimesheetBody.querySelectorAll("tr[data-employee-id]")).map((row) => {
+    const employeeId = Number(row.dataset.employeeId);
+    const status = row.querySelector(`input[name="status_${employeeId}"]:checked`)?.value || "present";
+    return {
+      employee_id: employeeId,
+      status,
+      advance: asInt(row.querySelector('[data-kind="advance"]')?.value),
+      side_job: asInt(row.querySelector('[data-kind="side_job"]')?.value),
+      is_late: row.querySelector(".btn-late-toggle")?.classList.contains("is-active") || false,
+      note: row.querySelector(".daily-note-input")?.value.trim() || "",
+    };
+  });
+}
+
+async function saveDailyTimesheet(event) {
+  event.preventDefault();
+  dailyTimesheetBody.querySelectorAll(".js-daily-money").forEach(normalizeDailyMoneyInput);
+  const rows = collectDailyTimesheetRows();
+  if (!rows.length) return;
+  setAdminStatus(dailyTimesheetStatus, "Сохраняю табель...");
+  try {
+    const result = await apiRequest("POST", "mobile/timesheet/daily/", {
+      date: state.dailyTimesheet.date,
+      rows,
+    });
+    setAdminStatus(dailyTimesheetStatus, `Табель сохранён. Строк: ${result.saved || rows.length}.`);
+    showToast("Табель сохранён.");
+    await loadDailyTimesheetView();
+  } catch (error) {
+    console.error(error);
+    setAdminStatus(dailyTimesheetStatus, `Ошибка сохранения табеля: ${error}`, true);
+  }
+}
+
+function openDailyReport() {
+  const rows = Array.from(dailyTimesheetBody.querySelectorAll("tr[data-employee-id]"));
+  const present = [];
+  const weekend = [];
+  let advTotal = 0;
+  for (const row of rows) {
+    const name = row.dataset.employeeName || "—";
+    const isPresent = row.querySelector(`input[value="present"]`)?.checked;
+    const isWeekend = row.querySelector(`input[value="weekend"]`)?.checked;
+    const adv = asInt(row.querySelector('[data-kind="advance"]')?.value);
+    advTotal += adv;
+    if (isPresent) present.push({ name, adv });
+    if (isWeekend) weekend.push({ name, adv });
+  }
+  const timeStr = new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
+  const cashier = state.bootstrap?.user?.display_name || state.bootstrap?.user?.username || "";
+  const buildGrid = (items, cls) => items.map((item) => `
+    <div class="daily-report-item ${cls}">
+      <span class="dr-dot"></span>
+      <span class="dr-name">${escapeHtml(item.name)}${item.adv > 0 ? ` <span class="dr-adv">— ${formatMoney(item.adv)} ₽</span>` : ""}</span>
+    </div>
+  `).join("");
+  dailyReportBody.innerHTML = `
+    <div class="daily-report-card">
+      <div class="daily-report-card-head">
+        <span class="daily-report-card-brand">Мастерская Вело 95 Мото</span>
+        <span class="daily-report-card-date">Отчёт за ${formatDate(state.dailyTimesheet.date)}</span>
+      </div>
+      <div class="daily-report-stats">
+        <div class="daily-report-stat present"><span class="daily-report-stat-num">${present.length}</span><span class="daily-report-stat-lbl">на работе</span></div>
+        <div class="daily-report-stat weekend"><span class="daily-report-stat-num">${weekend.length}</span><span class="daily-report-stat-lbl">выходной</span></div>
+      </div>
+      ${present.length ? `<div class="daily-report-section"><div class="daily-report-section-label">На работе</div><div class="daily-report-grid">${buildGrid(present, "present")}</div></div>` : ""}
+      ${weekend.length ? `<div class="daily-report-section"><div class="daily-report-section-label">Выходной</div><div class="daily-report-grid">${buildGrid(weekend, "weekend")}</div></div>` : ""}
+      <div class="daily-report-total"><span class="daily-report-total-label">Авансов итого</span><span class="daily-report-total-value">${advTotal > 0 ? `${formatMoney(advTotal)} ₽` : "—"}</span></div>
+      <div class="daily-report-footer"><span>Кассир: <strong>${escapeHtml(cashier)}</strong></span><span>${timeStr}</span></div>
+    </div>
+  `;
+  dailyReportModal.showModal();
+}
+
+function monthDays(month) {
+  const [year, mon] = String(month || monthValue(todayIsoDate())).split("-").map(Number);
+  const count = new Date(year, mon, 0).getDate();
+  return Array.from({ length: count }, (_, index) => {
+    const day = index + 1;
+    const iso = `${year}-${String(mon).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+    return { day, iso, weekday: new Date(`${iso}T12:00:00`).toLocaleDateString("ru-RU", { weekday: "short" }) };
+  });
+}
+
+function previousMonthValue(month) {
+  const [year, mon] = String(month || monthValue(todayIsoDate())).split("-").map(Number);
+  const date = new Date(year, mon - 2, 1);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+}
+
+const JOURNAL_MONTH_NAMES = [
+  "Январь",
+  "Февраль",
+  "Март",
+  "Апрель",
+  "Май",
+  "Июнь",
+  "Июль",
+  "Август",
+  "Сентябрь",
+  "Октябрь",
+  "Ноябрь",
+  "Декабрь",
+];
+
+function normalizedJournalMonth(value) {
+  const match = String(value || "").match(/^(\d{4})-(\d{2})$/);
+  if (!match) return monthValue(todayIsoDate());
+  const month = Number(match[2]);
+  if (month < 1 || month > 12) return monthValue(todayIsoDate());
+  return `${match[1]}-${match[2]}`;
+}
+
+function renderJournalMonthPicker(baseMonth = journalMonthInput?.value || state.journal.month) {
+  if (!journalMonthPicker) return;
+  const currentMonth = normalizedJournalMonth(baseMonth);
+  const [year, month] = currentMonth.split("-").map(Number);
+  journalMonthPicker.dataset.year = String(year);
+  journalMonthPicker.innerHTML = `
+    <div class="journal-month-popover__head">
+      <button type="button" class="journal-month-nav" data-month-nav="-1" aria-label="Предыдущий год">‹</button>
+      <strong>${year}</strong>
+      <button type="button" class="journal-month-nav" data-month-nav="1" aria-label="Следующий год">›</button>
+    </div>
+    <div class="journal-month-grid">
+      ${JOURNAL_MONTH_NAMES.map((name, index) => {
+        const value = `${year}-${String(index + 1).padStart(2, "0")}`;
+        const isSelected = index + 1 === month;
+        return `<button type="button" class="journal-month-option ${isSelected ? "is-selected" : ""}" data-month-value="${value}">${name}</button>`;
+      }).join("")}
+    </div>
+  `;
+}
+
+function showJournalMonthPicker() {
+  if (!journalMonthPicker) return;
+  renderJournalMonthPicker();
+  journalMonthPicker.classList.add("is-open");
+}
+
+function hideJournalMonthPicker() {
+  journalMonthPicker?.classList.remove("is-open");
+}
+
+function entryByEmployeeAndDay(entries) {
+  const map = new Map();
+  for (const entry of entries || []) {
+    const day = Number(String(entry.entry_date || "").slice(8, 10));
+    map.set(`${entry.employee}-${day}`, entry);
+  }
+  return map;
+}
+
+function journalCell(entry) {
+  if (!entry) return { value: "", cls: "is-empty", detail: "" };
+  const parts = [];
+  if (entry.is_late) parts.push(`<span class="summary6-hover-row"><span class="summary6-hover-label">Опоздание</span><span class="summary6-hover-value${entry.late_penalty ? " is-debt" : ""}">${entry.late_penalty ? `−${formatMoney(entry.late_penalty)} ₽` : "без штрафа"}</span></span>`);
+  if (entry.advance) parts.push(`<span class="summary6-hover-row"><span class="summary6-hover-label">Аванс</span><span class="summary6-hover-value">${formatMoney(entry.advance)} ₽</span></span>`);
+  if (entry.side_job) parts.push(`<span class="summary6-hover-row"><span class="summary6-hover-label">Подработка</span><span class="summary6-hover-value">${formatMoney(entry.side_job)} ₽</span></span>`);
+  if (entry.note) parts.push(`<span class="summary6-hover-row"><span class="summary6-hover-label">Комментарий</span><span class="summary6-hover-value">${escapeHtml(entry.note)}</span></span>`);
+  const baseCls = entry.status === "weekend" ? "is-weekend" : "is-present";
+  const cls = [
+    baseCls,
+    entry.advance ? "has-advance" : "",
+    entry.side_job ? "has-side-job" : "",
+  ].filter(Boolean).join(" ");
+  const detail = parts.length ? `<span class="summary6-hover-card summary6-cell-detail-card"><span class="summary6-hover-title">Подробности дня</span><span class="summary6-hover-grid">${parts.join("")}</span></span>` : "";
+  return { value: entry.status === "weekend" ? "В" : "+", cls, detail };
+}
+
+function buildJournalRows(summaryData, monthData, previousSummaryData = null) {
+  const days = monthDays(summaryData.month);
+  const entries = entryByEmployeeAndDay(monthData.entries || []);
+  const previousRows = [
+    ...(previousSummaryData?.active_employees || []),
+    ...(previousSummaryData?.inactive_employees || []),
+  ];
+  const previousById = new Map(previousRows.map((employee) => [Number(employee.id), employee]));
+  const makeRows = (items, type) => (items || []).map((employee) => {
+    const cells = days.map((day) => journalCell(entries.get(`${employee.id}-${day.day}`)));
+    const previous = previousById.get(Number(employee.id));
+    const diff = previous ? Number(employee.total || 0) - Number(previous.total || 0) : null;
+    const trend = Number(employee.total || 0) < 0 && diff
+      ? (diff > 0 ? "better" : "worse")
+      : null;
+    return { ...employee, employeeType: type, cells, previous_total: previous?.total ?? null, trend_diff: diff, trend, stable_id: `${type}-${employee.id}` };
+  });
+  return { days, rows: [...makeRows(summaryData.active_employees, "active"), ...makeRows(summaryData.inactive_employees, "inactive")] };
+}
+
+function journalTrendHtml(employee) {
+  if (!employee?.trend) return "";
+  return `
+    <span class="summary6-trend-anchor" tabindex="0">
+      <span class="summary6-trend ${employee.trend}">${employee.trend === "better" ? "▼" : "▲"}</span>
+      <span class="summary6-hover-card summary6-trend-card">
+        <span class="summary6-hover-title">Сравнение с прошлым месяцем</span>
+        <span class="summary6-hover-grid">
+          <span class="summary6-hover-row"><span class="summary6-hover-label">Прошлый месяц</span><span class="summary6-hover-value">${formatMoney(employee.previous_total || 0)} ₽</span></span>
+          <span class="summary6-hover-row"><span class="summary6-hover-label">Этот месяц</span><span class="summary6-hover-value">${formatMoney(employee.total || 0)} ₽</span></span>
+          <span class="summary6-hover-row"><span class="summary6-hover-label">Изменение</span><span class="summary6-hover-value ${employee.trend === "better" ? "summary6-trend-val-better" : "summary6-trend-val-worse"}">${employee.trend_diff > 0 ? "+" : ""}${formatMoney(employee.trend_diff || 0)} ₽</span></span>
+        </span>
+      </span>
+    </span>
+  `;
+}
+
+function setJournalSelection(journalId) {
+  state.journal.selectedId = journalId || "";
+  const rows = Array.from(journalBody?.querySelectorAll(".summary6-data-row") || []);
+  rows.forEach((row) => row.classList.toggle("is-selected", row.dataset.journalId === state.journal.selectedId));
+  const selectedEmployee = state.journal.rows.find((employee) => employee.stable_id === state.journal.selectedId);
+  renderJournalSidePanel(selectedEmployee || null);
+}
+
+function renderJournalSidePanel(employee = null) {
+  if (!journalSidePanel) return;
+  if (!employee) {
+    journalSidePanel.innerHTML = `<div class="journal-side-empty">Выберите сотрудника в журнале.</div>`;
+    return;
+  }
+  const total = Number(employee.total || 0);
+  const debt = Number(employee.debt || 0);
+  journalSidePanel.innerHTML = `
+    <div class="journal-side-head">
+      <div class="journal-side-title-row">
+        <span class="journal-side-label">Итоги за месяц</span>
+        <button class="journal-side-close" type="button" aria-label="Закрыть подробности">×</button>
+      </div>
+      <h2 title="${escapeHtml(employee.full_name || "—")}">${escapeHtml(employee.full_name || "—")}</h2>
+      <p>${employee.employeeType === "inactive" ? "Уволившийся сотрудник" : "Активный сотрудник"}${employee.day_off_label ? ` · выходной: ${escapeHtml(employee.day_off_label)}` : ""}</p>
+    </div>
+    <div class="journal-side-grid">
+      <div class="journal-side-stat"><span>Авансы</span><strong>${formatMoney(employee.advance_total || 0)} ₽</strong></div>
+      <div class="journal-side-stat"><span>Подработка</span><strong>${formatMoney(employee.side_job_total || 0)} ₽</strong></div>
+      <div class="journal-side-stat"><span>Заработал</span><strong>${formatMoney(employee.earned_total || 0)} ₽</strong></div>
+      <div class="journal-side-stat ${total < 0 ? "is-debt" : "is-good"}"><span>Итоговая сумма</span><strong><span>${formatMoney(total)} ₽</span>${journalTrendHtml(employee)}</strong></div>
+      <div class="journal-side-stat ${debt ? "is-debt" : ""}"><span>Долг</span><strong>${debt ? `−${formatMoney(debt)} ₽` : "0 ₽"}</strong></div>
+    </div>
+  `;
+}
+
+function renderJournal() {
+  if (!journalHead || !journalBody) return;
+  const { days, rows } = state.journal;
+  const emptyDayIndexes = days.map((_, dayIndex) => rows.every((employee) => employee.cells[dayIndex]?.cls === "is-empty"));
+  journalHead.innerHTML = `
+    <tr>
+      <th class="sticky-left summary6-index">№</th>
+      <th class="sticky-left second summary6-name">ФИО</th>
+      ${days.map((day, dayIndex) => `<th class="summary6-day-header ${emptyDayIndexes[dayIndex] ? "is-empty-day" : ""}"><span class="summary6-day-number">${day.day}</span><span class="summary6-day-weekday">${escapeHtml(day.weekday)}</span></th>`).join("")}
+    </tr>
+  `;
+  if (!rows.length) {
+    journalBody.innerHTML = `<tr class="empty-row"><td colspan="${days.length + 2}">Журнал пока пуст. Сначала заполните табель.</td></tr>`;
+    renderJournalSidePanel(null);
+    syncJournalFilters();
+    return;
+  }
+
+  let activeIndex = 0;
+  let inactiveIndex = 0;
+  journalBody.innerHTML = rows.map((employee) => {
+    const index = employee.employeeType === "inactive" ? ++inactiveIndex : ++activeIndex;
+    const inactiveClass = employee.employeeType === "inactive" ? " summary6-row-inactive" : "";
+    const name = employee.full_name || "—";
+    return `
+      <tr class="summary6-data-row${inactiveClass}"
+          data-journal-id="${employee.stable_id}"
+          data-employee-name="${escapeHtml(name.toLowerCase())}"
+          data-employee-type="${employee.employeeType}"
+          data-has-debt="${Number(employee.debt || 0) ? "1" : "0"}"
+          data-has-advance="${Number(employee.advance_total || 0) ? "1" : "0"}"
+          data-has-sidejob="${Number(employee.side_job_total || 0) ? "1" : "0"}"
+          data-advance-total="${employee.advance_total || 0}"
+          data-sidejob-total="${employee.side_job_total || 0}"
+          data-earned-total="${employee.earned_total || 0}"
+          data-summary-total="${employee.total || 0}">
+        <td class="sticky-left summary6-index">${index}</td>
+        <td class="sticky-left second summary6-name">
+          <span class="summary6-name-anchor" tabindex="0">
+            <span class="summary6-name-text">${escapeHtml(name)}</span>
+            <span class="summary6-hover-card">
+              <span class="summary6-hover-title">Данные сотрудника</span>
+              <span class="summary6-hover-grid">
+                <span class="summary6-hover-row is-debt"><span class="summary6-hover-label">Долг</span><span class="summary6-hover-value is-debt">${employee.debt ? `−${formatMoney(employee.debt)} ₽` : "0 ₽"}</span></span>
+                <span class="summary6-hover-row"><span class="summary6-hover-label">Выходной</span><span class="summary6-hover-value">${escapeHtml(employee.day_off_label || "—")}</span></span>
+                <span class="summary6-hover-row"><span class="summary6-hover-label">Зарплата</span><span class="summary6-hover-value">${formatMoney(employee.salary || 0)} ₽</span></span>
+                <span class="summary6-hover-row"><span class="summary6-hover-label">Зарплата в день</span><span class="summary6-hover-value">${formatMoney(employee.daily_salary || 0)} ₽</span></span>
+              </span>
+            </span>
+          </span>
+        </td>
+        ${employee.cells.map((cell, dayIndex) => `<td class="summary6-cell ${cell.cls} ${emptyDayIndexes[dayIndex] ? "is-empty-day" : ""}"><span class="summary6-cell-anchor" tabindex="0"><span>${cell.value}</span>${cell.detail}</span></td>`).join("")}
+      </tr>
+    `;
+  }).join("");
+  syncJournalFilters();
+}
+
+function syncJournalFilters() {
+  const rows = Array.from(journalBody?.querySelectorAll(".summary6-data-row") || []);
+  const search = (journalSearch?.value || "").trim().toLowerCase();
+  const type = journalEmployeeType?.value || "active";
+  const highlight = journalHighlightFilter?.value || "all";
+  let visible = 0;
+  let advances = 0;
+  let sideJobs = 0;
+  let earned = 0;
+  let total = 0;
+  rows.forEach((row) => {
+    let ok = !search || (row.dataset.employeeName || "").includes(search);
+    ok = ok && (type === "all" || row.dataset.employeeType === type);
+    if (highlight === "debt") ok = ok && row.dataset.hasDebt === "1";
+    if (highlight === "nonnegative") ok = ok && Number(row.dataset.summaryTotal || 0) >= 0;
+    if (highlight === "advance") ok = ok && row.dataset.hasAdvance === "1";
+    if (highlight === "sidejob") ok = ok && row.dataset.hasSidejob === "1";
+    row.classList.toggle("summary6-row-hidden", !ok);
+    if (ok) {
+      visible += 1;
+      advances += Number(row.dataset.advanceTotal || 0);
+      sideJobs += Number(row.dataset.sidejobTotal || 0);
+      earned += Number(row.dataset.earnedTotal || 0);
+      total += Number(row.dataset.summaryTotal || 0);
+    }
+  });
+  const visibleRows = rows.filter((row) => !row.classList.contains("summary6-row-hidden"));
+  if (!visibleRows.some((row) => row.dataset.journalId === state.journal.selectedId)) {
+    state.journal.selectedId = visibleRows[0]?.dataset.journalId || "";
+  }
+  setJournalSelection(state.journal.selectedId);
+  document.querySelector("#journal-kpi-employees").textContent = visible;
+  document.querySelector("#journal-kpi-advances").textContent = `${formatMoney(advances)} ₽`;
+  document.querySelector("#journal-kpi-sidejobs").textContent = `${formatMoney(sideJobs)} ₽`;
+  document.querySelector("#journal-kpi-earned").textContent = `${formatMoney(earned)} ₽`;
+  document.querySelector("#journal-kpi-total").textContent = `${formatMoney(total)} ₽`;
+  if (journalFilterStatus) journalFilterStatus.textContent = `Показано ${visible} из ${rows.length} сотрудников.`;
+  journalFilterEmpty?.classList.toggle("is-visible", rows.length > 0 && visible === 0);
+}
+
+async function loadJournalView() {
+  const month = journalMonthInput?.value || state.journal.month || monthValue(todayIsoDate());
+  state.journal.month = month;
+  if (journalMonthInput) journalMonthInput.value = month;
+  renderJournalMonthPicker(month);
+  const hasCached = state.journal.rows.length > 0 && state.journal._cachedMonth === month;
+  if (hasCached) {
+    renderJournal();
+    const previousMonth = previousMonthValue(month);
+    Promise.all([
+      apiRequest("GET", `mobile/summary/?month=${month}`),
+      apiRequest("GET", `mobile/timesheet/monthly/?month=${month}`),
+      apiRequest("GET", `mobile/summary/?month=${previousMonth}`),
+    ]).then(([summaryData, monthData, previousSummaryData]) => {
+      const built = buildJournalRows(summaryData, monthData, previousSummaryData);
+      state.journal.month = summaryData.month || month;
+      state.journal._cachedMonth = summaryData.month || month;
+      state.journal.days = built.days;
+      state.journal.rows = built.rows;
+      renderJournal();
+      setAdminStatus(journalStatus, "");
+    }).catch(() => {});
+    return;
+  }
+  setAdminStatus(journalStatus, "Загружаю журнал...");
+  try {
+    const previousMonth = previousMonthValue(month);
+    const [summaryData, monthData, previousSummaryData] = await Promise.all([
+      apiRequest("GET", `mobile/summary/?month=${month}`),
+      apiRequest("GET", `mobile/timesheet/monthly/?month=${month}`),
+      apiRequest("GET", `mobile/summary/?month=${previousMonth}`),
+    ]);
+    const built = buildJournalRows(summaryData, monthData, previousSummaryData);
+    state.journal.month = summaryData.month || month;
+    state.journal._cachedMonth = summaryData.month || month;
+    state.journal.days = built.days;
+    state.journal.rows = built.rows;
+    renderJournal();
+    setAdminStatus(journalStatus, "");
+  } catch (error) {
+    console.error(error);
+    setAdminStatus(journalStatus, `Ошибка загрузки журнала: ${error}`, true);
   }
 }
 
@@ -979,27 +2263,43 @@ function renderSalaryRecords(records) {
   `;
 }
 
+function renderSalaryData(data) {
+  const masters = data.masters || [];
+  const assemblers = (data.assemblers || []).map((item) => ({
+    name: `Сборщик - ${item.name || "—"}`,
+    earned: item.earned || 0,
+  }));
+  const records = data.records || [];
+  state.salaryRecords = records;
+  salaryDateInput.value = data.date || todayIsoDate();
+  salaryDateMeta.textContent = data.date ? formatDate(data.date) : "Выбери дату";
+  salaryContent.innerHTML = `
+    ${renderSalaryList("Мастера", masters, "По мастерам пока пусто", "За эту дату начислений для мастеров не найдено.")}
+    ${renderSalaryList("Сборщики", assemblers, "По сборке пока пусто", "За выбранную дату начислений для сборщиков не найдено.")}
+    ${renderSalaryRecords(records)}
+  `;
+}
+
 async function loadSalaryView() {
   if (!salaryContent) return;
   const dateValue = salaryDateInput.value || "";
+  const cache = state.salaryCache;
+  if (cache && (!dateValue || cache.date === dateValue)) {
+    renderSalaryData(cache);
+    const query = dateValue ? `?date=${encodeURIComponent(dateValue)}` : "";
+    apiRequest("GET", `mobile/salary/${query}`).then((data) => {
+      state.salaryCache = data;
+      renderSalaryData(data);
+      setAdminStatus(salaryStatus, "");
+    }).catch(() => {});
+    return;
+  }
   setAdminStatus(salaryStatus, "Загружаю...");
   try {
     const query = dateValue ? `?date=${encodeURIComponent(dateValue)}` : "";
     const data = await apiRequest("GET", `mobile/salary/${query}`);
-    salaryDateInput.value = data.date || dateValue || todayIsoDate();
-    salaryDateMeta.textContent = data.date ? formatDate(data.date) : "Выбери дату";
-    const masters = data.masters || [];
-    const assemblers = (data.assemblers || []).map((item) => ({
-      name: `Сборщик - ${item.name || "—"}`,
-      earned: item.earned || 0,
-    }));
-    const records = data.records || [];
-    state.salaryRecords = records;
-    salaryContent.innerHTML = `
-      ${renderSalaryList("Мастера", masters, "По мастерам пока пусто", "За эту дату начислений для мастеров не найдено.")}
-      ${renderSalaryList("Сборщики", assemblers, "По сборке пока пусто", "За выбранную дату начислений для сборщиков не найдено.")}
-      ${renderSalaryRecords(records)}
-    `;
+    state.salaryCache = data;
+    renderSalaryData(data);
     setAdminStatus(salaryStatus, "");
   } catch (error) {
     console.error(error);
@@ -1010,8 +2310,16 @@ async function loadSalaryView() {
 async function refreshAll() {
   await loadRecords();
   await loadAssemblies();
-  if (state.currentView === "salary") {
+  const view = state.currentView;
+  if (view === "salary") {
     await loadSalaryView();
+  } else if (view === "advances") {
+    state.employeeAdvances = await invoke("list_employee_advances");
+    renderAdvances();
+  } else if (view === "assembly-order" || view === "assembly-orders") {
+    state.assemblyOrders = await invoke("list_assembly_orders");
+    renderAssemblyOrders(assemblyOrderCreateList);
+    renderAssemblyOrders(assemblyOrdersList);
   }
 }
 
@@ -1079,8 +2387,8 @@ async function saveRecord(event) {
     updateRecordTotal();
     updateRecordSubmitState();
     await loadRecords();
-    setStatus(`Запись L-${localId} сохранена локально. Отправляю на сайт...`);
-    await syncNow(`Запись L-${localId} сохранена и синхронизирована с сайтом.`);
+    setStatus(`Запись L-${localId} сохранена локально. Синхронизация пойдёт в фоне.`);
+    queueBackgroundSync("record-save", `Запись L-${localId} синхронизирована с сайтом.`);
   } catch (error) {
     console.error(error);
     setStatus(`Ошибка сохранения записи: ${error}`);
@@ -1100,57 +2408,167 @@ async function syncPendingRecords() {
   }
 
   try {
-    setStatus("Отправляю локальные записи на сайт...");
-    const message = await invoke("sync_records", {
-      settings,
-    });
-    await invoke("pull_records", { settings });
-    await refreshAll();
-    setStatus(message);
+    await syncNow("Данные синхронизированы с сайтом.", { reason: "manual", forceHealth: true });
   } catch (error) {
     console.error(error);
     setStatus(`Ошибка синхронизации: ${error}`);
   }
 }
 
-async function syncNow(successMessage = "Действие синхронизировано с сайтом.") {
+async function syncNow(successMessage = "Действие синхронизировано с сайтом.", options = {}) {
   const settings = currentSettings();
-  if (!settings.server_url || !settings.username || !settings.password) {
+  if (!hasSyncCredentials(settings)) {
     await refreshAll();
     setStatus("Сохранено локально. Для отправки на сайт нужен вход в аккаунт.");
     return false;
   }
+  if (state.network.syncInProgress) {
+    console.info(`[offline-startup] sync skipped reason=${options.reason || "background"} already_running=true`);
+    return false;
+  }
 
   try {
+    if (!state.network.online || options.forceHealth) {
+      const online = await runHealthCheck(options.reason || "sync");
+      if (!online) {
+        await refreshAll();
+        setStatus("Сохранено локально. Сервер недоступен, попробую синхронизировать в фоне.");
+        console.info(`[offline-startup] sync deferred reason=${options.reason || "background"} mode=offline`);
+        return false;
+      }
+    }
+
+    state.network.syncInProgress = true;
+    console.info(`[offline-startup] sync started reason=${options.reason || "background"}`);
+    setStatus("Онлайн. Синхронизация в фоне...");
     const message = await invoke("sync_records", { settings });
-    await invoke("pull_records", { settings });
+    const syncInfo = await invoke("get_sync_info");
+    if (syncInfo.is_first_sync && options.background) {
+      console.info("[offline-startup] pull skipped reason=first_background_sync");
+    } else {
+      await invoke("pull_records", { settings });
+      await invoke("pull_all_today", { settings });
+    }
     await refreshAll();
     setStatus(message.includes("уже отметили") ? message : (successMessage || message));
+    console.info(`[offline-startup] sync success reason=${options.reason || "background"}`);
     return true;
   } catch (error) {
     console.error(error);
+    state.network.online = false;
+    state.network.mode = "offline";
+    console.warn(`[offline-startup] sync error reason=${options.reason || "background"}`, error);
     await refreshAll();
     setStatus(`Сохранено локально, но сайт сейчас не принял синхронизацию: ${error}`);
     return false;
+  } finally {
+    state.network.syncInProgress = false;
   }
 }
 
+const SyncService = (() => {
+  let _timer = null;
+  let _lastSyncAt = null;
+  let _error = null;
+  const INTERVAL = 60_000;
+
+  function _el() { return document.getElementById("sync-indicator"); }
+
+  function _renderIndicator() {
+    const el = _el();
+    if (!el) return;
+    const timeEl = el.querySelector(".sync-indicator__time");
+    if (state.network.syncInProgress) {
+      el.className = "sync-indicator sync-indicator--syncing";
+      el.title = "Синхронизация...";
+      timeEl.textContent = "синхр...";
+    } else if (_error) {
+      el.className = "sync-indicator sync-indicator--error";
+      el.title = `Ошибка: ${_error}`;
+      timeEl.textContent = "";
+    } else if (_lastSyncAt) {
+      const t = _lastSyncAt.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
+      el.className = "sync-indicator sync-indicator--ok";
+      el.title = `Синхронизировано: ${t}`;
+      timeEl.textContent = t;
+    } else {
+      el.className = "sync-indicator sync-indicator--idle";
+      el.title = "Ожидание синхронизации";
+      timeEl.textContent = "";
+    }
+  }
+
+  async function _run() {
+    _renderIndicator();
+    try {
+      const ok = await syncNow("", { reason: "auto", background: true });
+      if (ok) {
+        _lastSyncAt = new Date();
+        _error = null;
+      }
+    } catch (e) {
+      _error = String(e).slice(0, 80);
+    }
+    _renderIndicator();
+  }
+
+  return {
+    start() {
+      if (_timer) clearInterval(_timer);
+      _run();
+      _timer = setInterval(_run, INTERVAL);
+    },
+    stop() {
+      clearInterval(_timer);
+      _timer = null;
+    },
+    runNow: _run,
+    renderIndicator: _renderIndicator,
+  };
+})();
+
 async function pullFromSite(reason = "Обновляю данные с сайта...") {
   const settings = currentSettings();
-  if (!settings.server_url || !settings.username || !settings.password) {
+  if (!hasSyncCredentials(settings)) {
     return;
   }
+  const isAuto = reason.includes("Автоматически");
   try {
-    setStatus(reason);
+    if (!isAuto) setStatus(reason);
+    const online = await runHealthCheck(isAuto ? "auto-refresh" : "manual-refresh");
+    if (!online) {
+      if (!isAuto) setStatus("Сервер недоступен. Показаны локальные данные.");
+      return;
+    }
     const bootstrap = await invoke("login_and_bootstrap", { settings });
     applyBootstrap(bootstrap);
-    await invoke("pull_records", { settings });
+    const syncInfo = await invoke("get_sync_info");
+    if (syncInfo.is_first_sync && isAuto) {
+      console.info("[offline-startup] auto pull skipped reason=first_sync");
+    } else {
+      await invoke("pull_records", { settings });
+    }
     await refreshAll();
-    setStatus(`Синхронизировано в ${new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })}.`);
+    if (!isAuto) {
+      setStatus(`Синхронизировано в ${new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })}.`);
+    }
   } catch (error) {
     console.error(error);
-    setStatus("Не синхронизировано с сайтом.");
+    if (!isAuto) setStatus("Не синхронизировано с сайтом.");
   }
+}
+
+async function startOfflineFirstStartup() {
+  const online = await runHealthCheck("startup");
+  console.info(`[offline-startup] startup mode=${online ? "online" : "offline"}`);
+  if (!online) {
+    loginStatus.textContent = "Офлайн-режим готов. Введите пароль, чтобы открыть локальную базу.";
+    scheduleReconnectWorker(30000);
+    return;
+  }
+
+  loginStatus.textContent = "Сервер доступен. Введите пароль, чтобы открыть программу.";
+  scheduleReconnectWorker(120000);
 }
 
 async function login(event) {
@@ -1159,30 +2577,50 @@ async function login(event) {
   usernameInput.value = loginUsernameInput.value.trim();
   passwordInput.value = loginPasswordInput.value;
   saveSyncSettings();
-  try {
-    loginStatus.textContent = "Входим и скачиваем актуальные данные...";
-    const settings = currentSettings();
-    const bootstrap = await invoke("login_and_bootstrap", { settings });
-    applyBootstrap(bootstrap);
-    loginScreen.classList.add("is-hidden");
-    appShell.classList.remove("is-locked");
-    syncPanel.classList.add("is-hidden");
-    try {
-      await invoke("pull_records", { settings });
-    } catch (pullError) {
-      console.error(pullError);
-      setStatus("Вход выполнен, но данные с сайта пока не скачались.");
-    }
-    await refreshAll();
-    if (!statusText.textContent.startsWith("Вход выполнен, но")) {
-      setStatus("Вход выполнен. Данные с сайта загружены, офлайн-режим готов.");
-    }
-    window.clearInterval(state.pollTimer);
-    state.pollTimer = window.setInterval(() => pullFromSite("Автоматически обновляю данные с сайта..."), 30000);
-  } catch (error) {
-    console.error(error);
-    loginStatus.textContent = `Ошибка входа: ${error}`;
+  const settings = currentSettings();
+  if (!hasSyncCredentials(settings)) {
+    loginStatus.textContent = "Введите сайт, логин и пароль.";
+    return;
   }
+
+  loginStatus.textContent = "Проверяю пароль...";
+  const online = await runHealthCheck("login");
+
+  if (online) {
+    try {
+      const bootstrap = await invoke("login_and_bootstrap", { settings });
+      applyBootstrap(bootstrap);
+      rememberSuccessfulLogin(settings, bootstrap);
+      await rememberSuccessfulPassword(settings);
+      showLocalUi();
+      syncPanel.classList.add("is-hidden");
+      setStatus("Вход выполнен. Локальная база открыта, синхронизация пойдёт в фоне.");
+      SyncService.start();
+      scheduleReconnectWorker(120000);
+      return;
+    } catch (error) {
+      console.error(error);
+      loginStatus.textContent = `Неверный логин или пароль. Локальная база не открыта.`;
+      setStatus("Вход не выполнен.");
+      return;
+    }
+  }
+
+  const offlineAllowed = await canOpenOfflineWithPassword(settings);
+  if (!offlineAllowed) {
+    loginStatus.textContent = "Нет связи с сервером, и этот пароль не подтверждён локально. Локальная база не открыта.";
+    setStatus("Вход не выполнен.");
+    scheduleReconnectWorker(30000);
+    return;
+  }
+
+  const offlineBootstrap = restoreOfflineBootstrap();
+  if (offlineBootstrap) applyBootstrap(offlineBootstrap);
+  showLocalUi();
+  syncPanel.classList.add("is-hidden");
+  setStatus("Офлайн-режим. Пароль совпал с последним успешным входом, показаны данные из локальной базы.");
+  SyncService.start();
+  scheduleReconnectWorker(30000);
 }
 
 window.addEventListener("DOMContentLoaded", async () => {
@@ -1199,9 +2637,26 @@ window.addEventListener("DOMContentLoaded", async () => {
 
   try {
     await invoke("init_database");
+    // Мгновенный старт: UI из локальной SQLite, сеть не ждём
     await refreshAll();
     renderNavigation();
-    setStatus("Введите логин и пароль, чтобы загрузить данные с сайта.");
+    // Показываем статус синхронизации из прошлого сеанса
+    try {
+      const syncInfo = await invoke("get_sync_info");
+      if (syncInfo.is_first_sync) {
+        setStatus("Введите логин и пароль, чтобы загрузить данные с сайта.");
+      } else {
+        const ts = syncInfo.last_records_sync_at;
+        const dt = ts ? new Date(ts) : null;
+        const timeStr = dt
+          ? dt.toLocaleTimeString("ru-RU", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })
+          : "—";
+        setStatus(`Последняя синхронизация: ${timeStr}. Данные из локальной базы.`);
+      }
+    } catch {
+      setStatus("Данные из локальной базы.");
+    }
+    window.setTimeout(startOfflineFirstStartup, 0);
   } catch (error) {
     console.error(error);
     setStatus(`Ошибка локальной базы: ${error}`);
@@ -1248,6 +2703,9 @@ window.addEventListener("DOMContentLoaded", async () => {
   });
   updateRecordSubmitState();
   assemblySearch.addEventListener("input", loadAssemblies);
+
+
+  advancesSearch?.addEventListener("input", renderAdvances);
   phoneFilter.addEventListener("input", () => {
     state.currentPage = 1;
     filterRecords();
@@ -1283,60 +2741,25 @@ window.addEventListener("DOMContentLoaded", async () => {
     }
     renderRecords();
   });
-  recordsBody.addEventListener("change", (event) => {
-    if (!event.target.classList.contains("record-checkbox")) return;
-    const id = event.target.dataset.id;
-    if (event.target.checked) {
-      state.selectedRecordIds.add(id);
-    } else {
-      state.selectedRecordIds.delete(id);
-    }
-    renderRecords();
-  });
-  recordsBody.addEventListener("click", async (event) => {
-    const detailsButton = event.target.closest(".view-details");
-    if (detailsButton) {
-      const record = state.records.find((item) => recordStableId(item) === detailsButton.dataset.id);
-      if (record) showRecordDetails(record);
-      return;
-    }
-
-    const editButton = event.target.closest(".edit-record");
-    if (editButton) {
-      await requestEditPassword(editButton.dataset.id);
-      return;
-    }
-
-    const notifyButton = event.target.closest(".notify-client-btn");
-    if (notifyButton) {
-      const record = state.records.find((item) => recordStableId(item) === notifyButton.dataset.id);
-      if (record) await notifyClient(record, "call");
-      return;
-    }
-
-    const phoneLink = event.target.closest(".whatsapp-link");
-    if (phoneLink) {
-      event.preventDefault();
-      const record = state.records.find((item) => recordStableId(item) === phoneLink.dataset.id);
-      if (!record) return;
-      await notifyClient(record, "whatsapp");
-      window.open(buildWhatsAppUrl(record), "_blank");
-      return;
-    }
-
-    const collectButton = event.target.closest(".btn-collect");
-    if (collectButton) {
-      try {
-        await invoke("mark_record_collected", { recordKey: collectButton.dataset.id });
-        await loadRecords();
-        setStatus("Запись отмечена как 'Забрал'. Отправляю на сайт...");
-        await syncNow("Запись отмечена как 'Забрал' и синхронизирована с сайтом.");
-      } catch (error) {
-        console.error(error);
-        setStatus(`Не удалось отметить 'Забрал': ${error}`);
+  searchSelectAllCheckbox?.addEventListener("change", () => {
+    const digits = String(state.headerSearchQuery || "").replace(/\D/g, "");
+    const results = digits
+      ? state.records.filter((record) => String(record.phone || "").replace(/\D/g, "").includes(digits))
+      : [];
+    for (const record of results) {
+      const id = recordStableId(record);
+      if (searchSelectAllCheckbox.checked) {
+        state.selectedRecordIds.add(id);
+      } else {
+        state.selectedRecordIds.delete(id);
       }
     }
+    renderHeaderSearchResults(state.headerSearchQuery);
   });
+  recordsBody.addEventListener("change", handleRecordCheckboxChange);
+  searchRecordsBody?.addEventListener("change", handleRecordCheckboxChange);
+  recordsBody.addEventListener("click", handleRecordTableClick);
+  searchRecordsBody?.addEventListener("click", handleRecordTableClick);
   recordForm.addEventListener("submit", saveRecord);
   editRecordForm.addEventListener("submit", saveEditedRecord);
   editPasswordForm.addEventListener("submit", confirmEditPassword);
@@ -1347,6 +2770,17 @@ window.addEventListener("DOMContentLoaded", async () => {
   document.querySelector("#edit-close-button").addEventListener("click", () => recordEditModal.close());
   document.querySelector("#edit-cancel-button").addEventListener("click", () => recordEditModal.close());
   assemblyList.addEventListener("click", async (event) => {
+    const deleteButton = event.target.closest(".assembly-chip-delete");
+    if (deleteButton) {
+      try {
+        await deleteAssemblyEntry(deleteButton.dataset.assemblyEntryId);
+      } catch (error) {
+        console.error(error);
+        setStatus(`Не удалось удалить сборку: ${error}`);
+      }
+      return;
+    }
+
     const quickButton = event.target.closest("[data-assembly-quick]");
     if (quickButton) {
       const input = document.getElementById(quickButton.dataset.assemblyQuick);
@@ -1370,6 +2804,123 @@ window.addEventListener("DOMContentLoaded", async () => {
     const addButton = card?.querySelector("[data-assembly-add]");
     if (addButton) await saveAssemblyForCollector(addButton.dataset.collectorName, event.target, addButton);
   });
+  assemblyOrderForm?.addEventListener("submit", createAssemblyOrder);
+  [assemblyOrderCreateList, assemblyOrdersList].forEach((target) => {
+    target?.addEventListener("click", async (event) => {
+      const actionButton = event.target.closest("[data-order-action]");
+      if (!actionButton) return;
+      try {
+        const action = actionButton.dataset.orderAction === "assign" ? "advance" : actionButton.dataset.orderAction;
+        await changeAssemblyOrder(actionButton.dataset.orderId, action, actionButton.dataset.collectorName || "");
+      } catch (error) {
+        console.error(error);
+        setStatus(`Не удалось изменить заказ сборки: ${error}`);
+      }
+    });
+  });
+  advancesList?.addEventListener("click", async (event) => {
+    const deleteButton = event.target.closest(".adv-chip-delete");
+    if (deleteButton) {
+      if (window.confirm("Удалить аванс? Это действие нельзя отменить.")) {
+        try {
+          await deleteAdvance(deleteButton.dataset.advanceId);
+        } catch (error) {
+          console.error(error);
+          setStatus(`Не удалось удалить аванс: ${error}`);
+        }
+      }
+      return;
+    }
+
+    const quickButton = event.target.closest("[data-advance-quick]");
+    if (quickButton) {
+      const input = document.getElementById(quickButton.dataset.advanceQuick);
+      if (input) {
+        input.value = quickButton.dataset.amount;
+        input.focus();
+      }
+      return;
+    }
+
+    const addButton = event.target.closest("[data-advance-add]");
+    if (addButton) {
+      const input = document.getElementById(addButton.dataset.advanceAdd);
+      if (input) await saveAdvanceForEmployee(addButton.dataset.employeeName, input, addButton);
+    }
+  });
+  advancesList?.addEventListener("keydown", async (event) => {
+    if (event.key !== "Enter" || !event.target.classList.contains("adv-input")) return;
+    event.preventDefault();
+    const card = event.target.closest(".adv-card");
+    const addButton = card?.querySelector("[data-advance-add]");
+    if (addButton) await saveAdvanceForEmployee(addButton.dataset.employeeName, event.target, addButton);
+  });
+  dailyTimesheetDateForm?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    loadDailyTimesheetView();
+  });
+  dailyTimesheetSaveForm?.addEventListener("submit", saveDailyTimesheet);
+  dailyTimesheetBody?.addEventListener("click", (event) => {
+    const lateButton = event.target.closest(".btn-late-toggle");
+    if (!lateButton || lateButton.disabled) return;
+    lateButton.classList.toggle("is-active");
+  });
+  dailyTimesheetBody?.addEventListener("change", (event) => {
+    if (!event.target.matches('input[type="radio"][name^="status_"]')) return;
+    const row = event.target.closest("tr[data-employee-id]");
+    if (row) syncDailyLateButton(row);
+  });
+  dailyTimesheetBody?.addEventListener("focusin", (event) => {
+    if (event.target.classList.contains("js-daily-money") && event.target.value === "0") event.target.value = "";
+  });
+  dailyTimesheetBody?.addEventListener("input", (event) => {
+    if (!event.target.classList.contains("js-daily-money")) return;
+    event.target.value = String(event.target.value || "").replace(/\D/g, "");
+  });
+  dailyTimesheetBody?.addEventListener("focusout", (event) => {
+    if (event.target.classList.contains("js-daily-money")) normalizeDailyMoneyInput(event.target);
+  });
+  dailyReportButton?.addEventListener("click", openDailyReport);
+  document.querySelector("#daily-report-close")?.addEventListener("click", () => dailyReportModal.close());
+  journalMonthForm?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    hideJournalMonthPicker();
+    loadJournalView();
+  });
+  journalMonthInput?.addEventListener("focus", showJournalMonthPicker);
+  journalMonthInput?.addEventListener("click", showJournalMonthPicker);
+  journalMonthPicker?.addEventListener("click", (event) => {
+    const navButton = event.target.closest("[data-month-nav]");
+    if (navButton) {
+      const year = Number(journalMonthPicker.dataset.year || new Date().getFullYear()) + Number(navButton.dataset.monthNav || 0);
+      renderJournalMonthPicker(`${year}-${String(Number((journalMonthInput?.value || state.journal.month || monthValue(todayIsoDate())).slice(5, 7)) || 1).padStart(2, "0")}`);
+      journalMonthPicker.classList.add("is-open");
+      return;
+    }
+    const monthButton = event.target.closest("[data-month-value]");
+    if (!monthButton) return;
+    if (journalMonthInput) journalMonthInput.value = monthButton.dataset.monthValue;
+    state.journal.month = monthButton.dataset.monthValue;
+    renderJournalMonthPicker(monthButton.dataset.monthValue);
+    hideJournalMonthPicker();
+  });
+  document.addEventListener("click", (event) => {
+    if (event.target.closest(".journal-month-picker-wrap")) return;
+    hideJournalMonthPicker();
+  });
+  [journalSearch, journalEmployeeType, journalHighlightFilter].forEach((input) => {
+    input?.addEventListener("input", syncJournalFilters);
+    input?.addEventListener("change", syncJournalFilters);
+  });
+  journalBody?.addEventListener("click", (event) => {
+    const row = event.target.closest(".summary6-data-row");
+    if (!row || row.classList.contains("summary6-row-hidden")) return;
+    setJournalSelection(row.dataset.journalId);
+  });
+  journalSidePanel?.addEventListener("click", (event) => {
+    if (!event.target.closest(".journal-side-close")) return;
+    setJournalSelection("");
+  });
   salaryFilterForm.addEventListener("submit", (event) => {
     event.preventDefault();
     loadSalaryView();
@@ -1386,8 +2937,8 @@ window.addEventListener("DOMContentLoaded", async () => {
     if (collectButton) {
       try {
         await invoke("mark_record_collected", { recordKey: collectButton.dataset.id });
-        setAdminStatus(salaryStatus, "Запись отмечена как 'Забрал'. Отправляю на сайт...");
-        await syncNow("Запись отмечена как 'Забрал' и синхронизирована с сайтом.");
+        setAdminStatus(salaryStatus, "Запись отмечена как 'Забрал' локально. Синхронизация пойдёт в фоне.");
+        queueBackgroundSync("salary-record-collected", "Запись отмечена как 'Забрал' и синхронизирована с сайтом.");
         await loadSalaryView();
       } catch (error) {
         console.error(error);
@@ -1398,13 +2949,12 @@ window.addEventListener("DOMContentLoaded", async () => {
   loginForm.addEventListener("submit", login);
   headerSearchForm.addEventListener("submit", (event) => {
     event.preventDefault();
-    phoneFilter.value = headerPhoneSearch.value.trim();
-    state.currentPage = 1;
-    switchView("records");
-    filterRecords();
+    const query = headerPhoneSearch.value.trim();
+    switchView("records-search");
+    renderHeaderSearchResults(query);
   });
   logoutButton.addEventListener("click", logout);
-  refreshButton.addEventListener("click", () => pullFromSite("Обновляю данные с сайта..."));
+  refreshButton.addEventListener("click", () => SyncService.runNow());
   syncButton.addEventListener("click", syncPendingRecords);
   updateRecordTotal();
 
@@ -1427,11 +2977,44 @@ window.addEventListener("DOMContentLoaded", async () => {
 
   // ── Admin views init ──────────────────────────────────────────────
   initTimesheetView();
+  initAdvanceDebtPanels();
   initEmpAddModal();
   initAuditView();
   initOperatorView();
   initUsersView();
   initShopView();
+
+  // ── Notification tooltip ──────────────────────────────────────────
+  const notifyTooltipEl = document.getElementById("notify-tooltip");
+  function placeNotifyTooltip(button) {
+    const rect = button.getBoundingClientRect();
+    const margin = 10;
+    const w = notifyTooltipEl.offsetWidth;
+    const h = notifyTooltipEl.offsetHeight;
+    let left = rect.left + rect.width / 2 - w / 2;
+    let top = rect.bottom + margin;
+    left = Math.max(12, Math.min(left, window.innerWidth - w - 12));
+    if (top + h > window.innerHeight - 12) top = Math.max(12, rect.top - h - margin);
+    notifyTooltipEl.style.left = `${left}px`;
+    notifyTooltipEl.style.top = `${top}px`;
+  }
+  document.addEventListener("mouseover", (event) => {
+    const btn = event.target.closest(".notify-client-btn");
+    if (!btn) return;
+    if (btn.contains(event.relatedTarget)) return;
+    const text = btn.dataset.notificationTooltip || "Клиент не уведомлен";
+    notifyTooltipEl.textContent = text;
+    notifyTooltipEl.classList.add("is-visible");
+    placeNotifyTooltip(btn);
+  });
+  document.addEventListener("mouseout", (event) => {
+    const btn = event.target.closest(".notify-client-btn");
+    if (!btn) return;
+    if (btn.contains(event.relatedTarget)) return;
+    notifyTooltipEl.classList.remove("is-visible");
+  });
+  document.addEventListener("scroll", () => notifyTooltipEl.classList.remove("is-visible"), true);
+  window.addEventListener("resize", () => notifyTooltipEl.classList.remove("is-visible"));
 });
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
