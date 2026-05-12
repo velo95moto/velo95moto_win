@@ -1,5 +1,9 @@
 const { invoke } = window.__TAURI__.core;
 
+const DEFAULT_SERVER_URL = "https://velo95moto.ru";
+const DATA_PROFILE = "localhost-dev-v1";
+const PRODUCTION_SERVER_URL = "https://velo95moto.ru";
+
 const loginScreen = document.querySelector("#login-screen");
 const appShell = document.querySelector("#app-shell");
 const loginForm = document.querySelector("#login-form");
@@ -12,8 +16,6 @@ const userChip = document.querySelector("#user-chip");
 const headerSearchForm = document.querySelector("#header-search-form");
 const headerPhoneSearch = document.querySelector("#header-phone-search");
 const logoutButton = document.querySelector("#logout-button");
-const statusText = document.querySelector("#status-text");
-const pageTitle = document.querySelector("#page-title");
 const recordForm = document.querySelector("#record-form");
 const recordsBody = document.querySelector("#records-body");
 const searchRecordsBody = document.querySelector("#search-records-body");
@@ -49,14 +51,12 @@ const journalHead = document.querySelector("#journal-head");
 const journalBody = document.querySelector("#journal-body");
 const journalFilterEmpty = document.querySelector("#journal-filter-empty");
 const journalSidePanel = document.querySelector("#journal-side-panel");
-const refreshButton = document.querySelector("#refresh-button");
 const syncButton = document.querySelector("#sync-button");
 const syncPanel = document.querySelector(".sync-panel");
 const serverUrlInput = document.querySelector("#server-url");
 const usernameInput = document.querySelector("#username");
 const passwordInput = document.querySelector("#password");
 const partsInput = document.querySelector("#parts");
-const partsAdjustInput = document.querySelector("#parts-adjust");
 const servicesInput = document.querySelector("#services");
 const totalAmountEl = document.querySelector("#client-total-amount");
 const masterSelect = document.querySelector("#master");
@@ -141,6 +141,7 @@ const state = {
     date: "",
     employees: [],
     monthEntries: [],
+    salaryByName: {},
   },
   journal: {
     month: "",
@@ -158,6 +159,7 @@ const state = {
   datesInitialized: false,
   editingRecordKey: "",
   pendingEditRecordKey: "",
+  previousView: null,
   network: {
     online: false,
     mode: "unknown",
@@ -180,14 +182,49 @@ function asInt(value) {
   const number = Number.parseInt(String(value || "0").replace(/\D/g, ""), 10);
   return Number.isFinite(number) && number > 0 ? number : 0;
 }
-function setStatus(message) {
-  statusText.textContent = message;
+
+function normalizeServerUrl(value) {
+  const serverUrl = String(value || "").trim();
+  if (!serverUrl) return DEFAULT_SERVER_URL;
+  try {
+    const hostname = new URL(serverUrl).hostname;
+    if (hostname === "localhost" || hostname === "127.0.0.1") return DEFAULT_SERVER_URL;
+    if (hostname === new URL(PRODUCTION_SERVER_URL).hostname) return DEFAULT_SERVER_URL;
+  } catch {
+    return serverUrl;
+  }
+  return serverUrl;
+}
+
+function normalizeResourceUrl(value) {
+  const resourceUrl = String(value || "").trim();
+  if (!resourceUrl) return "";
+  try {
+    const url = new URL(resourceUrl);
+    if (url.hostname === new URL(PRODUCTION_SERVER_URL).hostname) {
+      return `${DEFAULT_SERVER_URL}${url.pathname}${url.search}${url.hash}`;
+    }
+  } catch {
+    return resourceUrl;
+  }
+  return resourceUrl;
+}
+
+function setStatus(message, isError = false) {
+  if (message) showToast(message, isError);
 }
 
 function loadSyncSettings() {
+  if (localStorage.getItem("dataProfile") !== DATA_PROFILE) {
+    localStorage.removeItem("lastAuthHash");
+    localStorage.removeItem("lastAuthUser");
+    localStorage.removeItem("lastBootstrap");
+    localStorage.setItem("dataProfile", DATA_PROFILE);
+  }
   const saved = localStorage.getItem("serverUrl");
-  const serverUrl = saved || "https://velo95moto.ru";
+  const serverUrl = normalizeServerUrl(saved);
   const username = localStorage.getItem("username") || "";
+  localStorage.setItem("serverUrl", serverUrl);
   serverUrlInput.value = serverUrl;
   usernameInput.value = username;
   loginServerUrlInput.value = serverUrl;
@@ -195,13 +232,13 @@ function loadSyncSettings() {
 }
 
 function saveSyncSettings() {
-  localStorage.setItem("serverUrl", serverUrlInput.value.trim() || loginServerUrlInput.value.trim());
+  localStorage.setItem("serverUrl", normalizeServerUrl(serverUrlInput.value || loginServerUrlInput.value));
   localStorage.setItem("username", usernameInput.value.trim() || loginUsernameInput.value.trim());
 }
 
 function currentSettings() {
   return {
-    server_url: (serverUrlInput.value || loginServerUrlInput.value || "https://velo95moto.ru").trim(),
+    server_url: normalizeServerUrl(serverUrlInput.value || loginServerUrlInput.value),
     username: (usernameInput.value || loginUsernameInput.value).trim(),
     password: passwordInput.value || loginPasswordInput.value,
   };
@@ -286,7 +323,6 @@ function scheduleReconnectWorker(delayMs = state.network.online ? 120000 : 30000
     const wasOnline = state.network.online;
     const isOnline = await runHealthCheck("reconnect");
     if (isOnline && !wasOnline) {
-      setStatus("Сервер доступен. Синхронизация в фоне...");
       queueBackgroundSync("reconnect", "Данные синхронизированы после восстановления связи.");
     }
     scheduleReconnectWorker(isOnline ? 120000 : 30000);
@@ -355,8 +391,6 @@ function switchView(viewName) {
     shop: "Управление магазином",
     accounting: "Бухгалтерия",
   };
-  pageTitle.textContent = titles[viewName] || "Список записей";
-
   if (ADMIN_VIEWS.has(viewName)) {
     loadAdminView(viewName);
   } else if (viewName === "salary") {
@@ -385,6 +419,8 @@ function renderNavigation() {
   for (const item of nav) {
     if (hasAssemblyDropdown && (item.id === "assembly_order" || item.id === "assembly_orders")) continue;
     const view = desktopNavView(item);
+    // Бухгалтерия доступна через шестерёнку — в основном nav дублировать не нужно
+    if (view === "timesheet") continue;
     const button = document.createElement("button");
     button.className = "nav-tab";
     button.type = "button";
@@ -630,19 +666,6 @@ function updateRecordTotal() {
   updateRecordSubmitState();
 }
 
-function applyPartsAdjustment(direction) {
-  const amount = asInt(partsAdjustInput.value);
-  if (!amount) {
-    partsAdjustInput.value = "";
-    return;
-  }
-  const nextValue = direction === "subtract"
-    ? Math.max(0, asInt(partsInput.value) - amount)
-    : asInt(partsInput.value) + amount;
-  partsInput.value = String(nextValue);
-  partsAdjustInput.value = "";
-  updateRecordTotal();
-}
 
 function getPhoneNationalDigits(value) {
   const rawValue = String(value || "").trim();
@@ -675,9 +698,33 @@ function validateRecordForm() {
   return validateRecord(formData, parts, services);
 }
 
+function highlightRecordFields() {
+  if (!recordForm) return;
+  const formData = new FormData(recordForm);
+  const parts    = asInt(partsInput.value);
+  const services = asInt(servicesInput.value);
+
+  const setInvalid = (el, invalid) => el?.classList.toggle("is-invalid", Boolean(invalid));
+
+  const phone = getPhoneNationalDigits(String(formData.get("phone") || ""));
+  setInvalid(newRecordPhoneInput, phone.length !== 10);
+  setInvalid(titleInput,      !String(formData.get("title")      || "").trim());
+  setInvalid(clientNameInput, !String(formData.get("clientName") || "").trim());
+  setInvalid(masterSelect,    !String(formData.get("master")     || "").trim());
+  setInvalid(commentsInput,   !String(formData.get("comments")   || "").trim());
+
+  const pricesInvalid = !formData.get("freeRepair") && parts <= 0 && services <= 0;
+  setInvalid(partsInput,    pricesInvalid);
+  setInvalid(servicesInput, pricesInvalid);
+}
+
 function updateRecordSubmitState() {
   if (!submitRecordButton) return;
-  submitRecordButton.disabled = Boolean(validateRecordForm());
+  const error = validateRecordForm();
+  submitRecordButton.disabled = Boolean(error);
+  submitRecordButton.title = error ? "Форма заполнена не полностью" : "";
+  highlightRecordFields();
+  if (error) console.debug(`[record-form] save blocked: ${error}`);
 }
 
 function showTableMessage(target, colspan, message) {
@@ -1249,6 +1296,7 @@ async function createAssemblyOrder(event) {
     assemblyOrderQuantity.value = "1";
     assemblyOrderCreateStatus.textContent = `Создано заказов: ${created}.`;
     await loadAssemblyOrders();
+    queueBackgroundSync("assembly-order-create", "Заказ сборки синхронизирован с сайтом.");
   } catch (error) {
     console.error(error);
     assemblyOrderCreateStatus.textContent = String(error);
@@ -1262,6 +1310,7 @@ async function changeAssemblyOrder(orderId, action, collectorName = "") {
     collectorName: collectorName || null,
   });
   await loadAssemblyOrders();
+  queueBackgroundSync("assembly-order-update", "Изменения заказа синхронизированы с сайтом.");
 }
 
 async function loadAssemblies() {
@@ -1532,9 +1581,12 @@ function renderAdvances() {
 }
 
 async function loadAdvancesView() {
-  if (advancesDate) advancesDate.textContent = advanceDateLabel(todayIsoDate());
+  const today = todayIsoDate();
+  if (advancesDate) advancesDate.textContent = advanceDateLabel(today);
+  const t0 = performance.now();
   try {
-    state.employeeAdvances = await invoke("list_employee_advances");
+    state.employeeAdvances = await invoke("list_employee_advances", { date: today });
+    console.debug(`[advances] loaded ${state.employeeAdvances.length} rows for ${today} in ${Math.round(performance.now() - t0)}ms (local DB only)`);
     renderAdvances();
     refreshAdvanceEmployeeCache();
     loadAdvanceDebtPanels();
@@ -1554,15 +1606,17 @@ async function saveAdvanceForEmployee(employeeName, input, button) {
 
   button.disabled = true;
   try {
+    const advanceDate = todayIsoDate();
     await invoke("save_employee_advance", {
       employeeName,
       amount,
-      advanceDate: todayIsoDate(),
+      advanceDate,
     });
     input.value = "";
-    state.employeeAdvances = await invoke("list_employee_advances");
+    state.employeeAdvances = await invoke("list_employee_advances", { date: advanceDate });
     renderAdvances();
     setStatus("Аванс сохранён локально.");
+    queueBackgroundSync("advance-save", "Аванс синхронизирован с сайтом.");
   } catch (error) {
     console.error(error);
     setStatus(`Ошибка сохранения аванса: ${error}`);
@@ -1626,8 +1680,8 @@ function initAdvanceDebtPanels() {
 }
 
 async function deleteAdvance(localId) {
-  await invoke("delete_employee_advance", { localId: Number(localId) });
-  state.employeeAdvances = await invoke("list_employee_advances");
+  await invoke("delete_employee_advance", { localId: Number(localId), settings: currentSettings() });
+  state.employeeAdvances = await invoke("list_employee_advances", { date: todayIsoDate() });
   renderAdvances();
   setStatus("Аванс удалён локально.");
 }
@@ -1672,6 +1726,30 @@ function dailyAdvanceFor(employee) {
   return localAdvance;
 }
 
+function normName(str) {
+  return String(str || "").trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function buildSalaryByName(data) {
+  const map = {};
+  for (const m of data?.masters || []) {
+    const key = normName(m.name);
+    if (key) map[key] = (map[key] || 0) + Number(m.earned || 0);
+  }
+  for (const a of data?.assemblers || []) {
+    const key = normName(a.name);
+    if (key) map[key] = (map[key] || 0) + Number(a.earned || 0);
+  }
+  return map;
+}
+
+function dailySideJobFor(employee) {
+  const entry = dailyEntryFor(employee);
+  if (entry.id && Number(entry.side_job || 0) > 0) return Number(entry.side_job);
+  const key = normName(employee.employee_name || employee.full_name || "");
+  return state.dailyTimesheet.salaryByName?.[key] || 0;
+}
+
 function dailyLateCount(employee) {
   const employeeId = Number(employee.employee_id || employee.id);
   return (state.dailyTimesheet.monthEntries || []).filter((entry) => (
@@ -1697,19 +1775,18 @@ function renderDailyTimesheet() {
     const id = employee.employee_id || employee.id;
     const name = employee.employee_name || employee.full_name || "—";
     const positions = employee.positions || "";
-    const department = employee.department_label || employee.department || "";
     const status = dailyStatusFor(employee);
     const entry = dailyEntryFor(employee);
     const isLate = Boolean(entry.is_late);
     const lateCount = dailyLateCount(employee);
     const advance = dailyAdvanceFor(employee);
-    const sideJob = Number(entry.side_job || 0);
+    const sideJob = dailySideJobFor(employee);
     const note = entry.note || "";
     return `
       <tr data-employee-id="${id}" data-employee-name="${escapeHtml(name)}">
         <td>
           <div class="daily-timesheet-name">${escapeHtml(name)}</div>
-          <div class="daily-timesheet-role">${escapeHtml([positions, department].filter(Boolean).join(" · "))}</div>
+          ${positions ? `<div class="daily-timesheet-role">${escapeHtml(positions)}</div>` : ""}
         </td>
         <td data-label="Статус">
           <div class="daily-timesheet-toggle">
@@ -1754,12 +1831,14 @@ async function loadDailyTimesheetView() {
     Promise.all([
       apiRequest("GET", `mobile/timesheet/daily/?date=${selectedDate}`),
       apiRequest("GET", `mobile/timesheet/monthly/?month=${monthValue(selectedDate)}`),
-      invoke("list_employee_advances"),
-    ]).then(([dayData, monthData, localAdvances]) => {
+      invoke("list_employee_advances", { date: selectedDate }),
+      apiRequest("GET", `mobile/salary/?date=${selectedDate}`).catch(() => ({})),
+    ]).then(([dayData, monthData, localAdvances, salaryData]) => {
       state.dailyTimesheet.date = dayData.date || selectedDate;
       state.dailyTimesheet._cachedDate = dayData.date || selectedDate;
       state.dailyTimesheet.employees = dayData.employees || [];
       state.dailyTimesheet.monthEntries = monthData.entries || [];
+      state.dailyTimesheet.salaryByName = buildSalaryByName(salaryData);
       state.employeeAdvances = localAdvances || [];
       renderDailyTimesheet();
       setAdminStatus(dailyTimesheetStatus, "");
@@ -1767,16 +1846,20 @@ async function loadDailyTimesheetView() {
     return;
   }
   setAdminStatus(dailyTimesheetStatus, "Загружаю табель...");
+  const t0Timesheet = performance.now();
   try {
-    const [dayData, monthData, localAdvances] = await Promise.all([
+    const [dayData, monthData, localAdvances, salaryData] = await Promise.all([
       apiRequest("GET", `mobile/timesheet/daily/?date=${selectedDate}`),
       apiRequest("GET", `mobile/timesheet/monthly/?month=${monthValue(selectedDate)}`),
-      invoke("list_employee_advances"),
+      invoke("list_employee_advances", { date: selectedDate }),
+      apiRequest("GET", `mobile/salary/?date=${selectedDate}`).catch(() => ({})),
     ]);
+    console.debug(`[timesheet] loaded for ${selectedDate}: ${(dayData.employees||[]).length} employees, ${localAdvances.length} local advances in ${Math.round(performance.now() - t0Timesheet)}ms`);
     state.dailyTimesheet.date = dayData.date || selectedDate;
     state.dailyTimesheet._cachedDate = dayData.date || selectedDate;
     state.dailyTimesheet.employees = dayData.employees || [];
     state.dailyTimesheet.monthEntries = monthData.entries || [];
+    state.dailyTimesheet.salaryByName = buildSalaryByName(salaryData);
     state.employeeAdvances = localAdvances || [];
     renderDailyTimesheet();
     setAdminStatus(dailyTimesheetStatus, "");
@@ -2282,12 +2365,14 @@ function renderSalaryData(data) {
 
 async function loadSalaryView() {
   if (!salaryContent) return;
-  const dateValue = salaryDateInput.value || "";
+  if (!salaryDateInput.value) salaryDateInput.value = todayIsoDate();
+  const dateValue = salaryDateInput.value;
   const cache = state.salaryCache;
-  if (cache && (!dateValue || cache.date === dateValue)) {
+  if (cache && cache.date === dateValue) {
     renderSalaryData(cache);
-    const query = dateValue ? `?date=${encodeURIComponent(dateValue)}` : "";
-    apiRequest("GET", `mobile/salary/${query}`).then((data) => {
+    const t0Salary = performance.now();
+    apiRequest("GET", `mobile/salary/?date=${encodeURIComponent(dateValue)}`).then((data) => {
+      console.debug(`[salary] background refresh for ${dateValue} in ${Math.round(performance.now() - t0Salary)}ms`);
       state.salaryCache = data;
       renderSalaryData(data);
       setAdminStatus(salaryStatus, "");
@@ -2295,9 +2380,10 @@ async function loadSalaryView() {
     return;
   }
   setAdminStatus(salaryStatus, "Загружаю...");
+  const t0Salary = performance.now();
   try {
-    const query = dateValue ? `?date=${encodeURIComponent(dateValue)}` : "";
-    const data = await apiRequest("GET", `mobile/salary/${query}`);
+    const data = await apiRequest("GET", `mobile/salary/?date=${encodeURIComponent(dateValue)}`);
+    console.debug(`[salary] loaded for ${dateValue} in ${Math.round(performance.now() - t0Salary)}ms`);
     state.salaryCache = data;
     renderSalaryData(data);
     setAdminStatus(salaryStatus, "");
@@ -2314,7 +2400,7 @@ async function refreshAll() {
   if (view === "salary") {
     await loadSalaryView();
   } else if (view === "advances") {
-    state.employeeAdvances = await invoke("list_employee_advances");
+    state.employeeAdvances = await invoke("list_employee_advances", { date: todayIsoDate() });
     renderAdvances();
   } else if (view === "assembly-order" || view === "assembly-orders") {
     state.assemblyOrders = await invoke("list_assembly_orders");
@@ -2419,7 +2505,6 @@ async function syncNow(successMessage = "Действие синхронизир
   const settings = currentSettings();
   if (!hasSyncCredentials(settings)) {
     await refreshAll();
-    setStatus("Сохранено локально. Для отправки на сайт нужен вход в аккаунт.");
     return false;
   }
   if (state.network.syncInProgress) {
@@ -2432,7 +2517,6 @@ async function syncNow(successMessage = "Действие синхронизир
       const online = await runHealthCheck(options.reason || "sync");
       if (!online) {
         await refreshAll();
-        setStatus("Сохранено локально. Сервер недоступен, попробую синхронизировать в фоне.");
         console.info(`[offline-startup] sync deferred reason=${options.reason || "background"} mode=offline`);
         return false;
       }
@@ -2440,17 +2524,12 @@ async function syncNow(successMessage = "Действие синхронизир
 
     state.network.syncInProgress = true;
     console.info(`[offline-startup] sync started reason=${options.reason || "background"}`);
-    setStatus("Онлайн. Синхронизация в фоне...");
     const message = await invoke("sync_records", { settings });
-    const syncInfo = await invoke("get_sync_info");
-    if (syncInfo.is_first_sync && options.background) {
-      console.info("[offline-startup] pull skipped reason=first_background_sync");
-    } else {
-      await invoke("pull_records", { settings });
-      await invoke("pull_all_today", { settings });
-    }
+    await invoke("pull_records", { settings });
+    await invoke("pull_all_today", { settings });
     await refreshAll();
-    setStatus(message.includes("уже отметили") ? message : (successMessage || message));
+    if (successMessage && !options.background) setStatus(successMessage);
+    else if (message.includes("уже отметили")) setStatus(message);
     console.info(`[offline-startup] sync success reason=${options.reason || "background"}`);
     return true;
   } catch (error) {
@@ -2459,7 +2538,6 @@ async function syncNow(successMessage = "Действие синхронизир
     state.network.mode = "offline";
     console.warn(`[offline-startup] sync error reason=${options.reason || "background"}`, error);
     await refreshAll();
-    setStatus(`Сохранено локально, но сайт сейчас не принял синхронизацию: ${error}`);
     return false;
   } finally {
     state.network.syncInProgress = false;
@@ -2470,6 +2548,7 @@ const SyncService = (() => {
   let _timer = null;
   let _lastSyncAt = null;
   let _error = null;
+  let _offline = false;
   const INTERVAL = 60_000;
 
   function _el() { return document.getElementById("sync-indicator"); }
@@ -2477,37 +2556,54 @@ const SyncService = (() => {
   function _renderIndicator() {
     const el = _el();
     if (!el) return;
-    const timeEl = el.querySelector(".sync-indicator__time");
+    const timeEl    = el.querySelector(".sync-widget__time");
+    const statusEl  = el.querySelector(".sync-widget__status");
+    const btn       = el.querySelector(".sync-widget__btn");
+
     if (state.network.syncInProgress) {
-      el.className = "sync-indicator sync-indicator--syncing";
-      el.title = "Синхронизация...";
-      timeEl.textContent = "синхр...";
+      el.className = "sync-widget sync-widget--syncing";
+      if (timeEl)   timeEl.textContent = "...";
+      if (statusEl) statusEl.title = "Идет синхронизация данных";
+      if (btn)      { btn.disabled = true;  btn.title = "Идет синхронизация данных"; }
     } else if (_error) {
-      el.className = "sync-indicator sync-indicator--error";
-      el.title = `Ошибка: ${_error}`;
-      timeEl.textContent = "";
+      el.className = "sync-widget sync-widget--error";
+      if (timeEl)   timeEl.textContent = "Ошибка";
+      if (statusEl) statusEl.title = "Ошибка синхронизации. Нажмите, чтобы повторить";
+      if (btn)      { btn.disabled = false; btn.title = "Повторить синхронизацию"; }
+    } else if (_offline) {
+      el.className = "sync-widget sync-widget--offline";
+      if (timeEl)   timeEl.textContent = "--:--";
+      if (statusEl) statusEl.title = "Нет соединения с сервером";
+      if (btn)      { btn.disabled = false; btn.title = "Обновить данные"; }
     } else if (_lastSyncAt) {
       const t = _lastSyncAt.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
-      el.className = "sync-indicator sync-indicator--ok";
-      el.title = `Синхронизировано: ${t}`;
-      timeEl.textContent = t;
+      el.className = "sync-widget sync-widget--ok";
+      if (timeEl)   timeEl.textContent = t;
+      if (statusEl) statusEl.title = `Последняя синхронизация: ${t}`;
+      if (btn)      { btn.disabled = false; btn.title = "Обновить данные"; }
     } else {
-      el.className = "sync-indicator sync-indicator--idle";
-      el.title = "Ожидание синхронизации";
-      timeEl.textContent = "";
+      el.className = "sync-widget sync-widget--idle";
+      if (timeEl)   timeEl.textContent = "--:--";
+      if (statusEl) statusEl.title = "Ожидание синхронизации";
+      if (btn)      { btn.disabled = false; btn.title = "Обновить данные"; }
     }
   }
 
   async function _run() {
+    if (state.network.syncInProgress) return;
     _renderIndicator();
     try {
       const ok = await syncNow("", { reason: "auto", background: true });
       if (ok) {
         _lastSyncAt = new Date();
         _error = null;
+        _offline = false;
+      } else if (!state.network.online) {
+        _offline = true;
       }
     } catch (e) {
       _error = String(e).slice(0, 80);
+      _offline = false;
     }
     _renderIndicator();
   }
@@ -2542,12 +2638,7 @@ async function pullFromSite(reason = "Обновляю данные с сайт�
     }
     const bootstrap = await invoke("login_and_bootstrap", { settings });
     applyBootstrap(bootstrap);
-    const syncInfo = await invoke("get_sync_info");
-    if (syncInfo.is_first_sync && isAuto) {
-      console.info("[offline-startup] auto pull skipped reason=first_sync");
-    } else {
-      await invoke("pull_records", { settings });
-    }
+    await invoke("pull_records", { settings });
     await refreshAll();
     if (!isAuto) {
       setStatus(`Синхронизировано в ${new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })}.`);
@@ -2558,22 +2649,121 @@ async function pullFromSite(reason = "Обновляю данные с сайт�
   }
 }
 
-async function startOfflineFirstStartup() {
-  const online = await runHealthCheck("startup");
-  console.info(`[offline-startup] startup mode=${online ? "online" : "offline"}`);
-  if (!online) {
-    loginStatus.textContent = "Офлайн-режим готов. Введите пароль, чтобы открыть локальную базу.";
-    scheduleReconnectWorker(30000);
-    return;
+// ── Touch ID ──────────────────────────────────────────────────────────────────
+
+let touchIdAvailable = false;
+
+async function initTouchId() {
+  try {
+    touchIdAvailable = await invoke("check_biometric_available");
+  } catch {
+    touchIdAvailable = false;
+  }
+  updateTouchIdUi();
+
+  const btn = document.querySelector("#touch-id-login-button");
+  if (btn) {
+    btn.addEventListener("click", loginWithBiometric);
   }
 
-  loginStatus.textContent = "Сервер доступен. Введите пароль, чтобы открыть программу.";
-  scheduleReconnectWorker(120000);
+  const sdItem = document.querySelector("#sd-touch-id");
+  if (sdItem) {
+    sdItem.addEventListener("click", async () => {
+      settingsDropdown.classList.add("is-hidden");
+      const isEnabled = localStorage.getItem("touchIdEnabled") === "1";
+      if (isEnabled) {
+        await disableTouchId();
+      } else {
+        await enableTouchId();
+      }
+    });
+  }
+}
+
+function updateTouchIdUi() {
+  const isEnabled = localStorage.getItem("touchIdEnabled") === "1";
+  const btn = document.querySelector("#touch-id-login-button");
+  const sdItem = document.querySelector("#sd-touch-id");
+  const sdLabel = document.querySelector("#sd-touch-id-label");
+
+  if (btn) btn.classList.toggle("is-hidden", !(touchIdAvailable && isEnabled));
+  if (sdItem) sdItem.classList.toggle("is-hidden", !touchIdAvailable);
+  if (sdLabel) sdLabel.textContent = isEnabled ? "Выключить Touch ID" : "Включить Touch ID";
+}
+
+async function loginWithBiometric() {
+  const btn = document.querySelector("#touch-id-login-button");
+  if (btn) { btn.disabled = true; btn.textContent = "Подождите…"; }
+  try {
+    const password = await invoke("authenticate_and_get_password", {
+      reason: "Войти в приложение Velo95Moto",
+    });
+    loginPasswordInput.value = password;
+    await login({ preventDefault: () => {} });
+  } catch (err) {
+    showToast(String(err), true);
+  } finally {
+    if (btn) { btn.disabled = false; updateTouchIdUi(); }
+  }
+}
+
+async function enableTouchId() {
+  const password = currentSettings().password;
+  if (!password) {
+    showToast("Не удалось получить пароль. Перезайдите в систему.", true);
+    return;
+  }
+  try {
+    await invoke("save_credentials_to_keychain", { password });
+    localStorage.setItem("touchIdEnabled", "1");
+    updateTouchIdUi();
+    showToast("Touch ID включён. Теперь можно входить по отпечатку.");
+  } catch (err) {
+    showToast("Не удалось сохранить в Keychain: " + String(err), true);
+  }
+}
+
+async function disableTouchId() {
+  try {
+    await invoke("delete_credentials_from_keychain");
+    localStorage.removeItem("touchIdEnabled");
+    updateTouchIdUi();
+    showToast("Touch ID выключен.");
+  } catch (err) {
+    showToast("Ошибка: " + String(err), true);
+  }
+}
+
+function maybePromptTouchId() {
+  if (!touchIdAvailable) return;
+  if (localStorage.getItem("touchIdEnabled") === "1") return;
+  setTimeout(() => {
+    showToastWithAction("Хотите входить через Touch ID?", "Включить", enableTouchId);
+  }, 800);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function startOfflineFirstStartup() {
+  // Показываем форму немедленно, не ждём сеть
+  loginStatus.textContent = "Введите пароль, чтобы открыть программу.";
+  // Health check — в фоне, только обновляет статус-строку
+  runHealthCheck("startup").then((online) => {
+    console.info(`[offline-startup] startup mode=${online ? "online" : "offline"}`);
+    if (!online) {
+      loginStatus.textContent = "Офлайн-режим. Введите пароль, чтобы открыть локальную базу.";
+      scheduleReconnectWorker(30000);
+    } else {
+      loginStatus.textContent = "Сервер доступен. Введите пароль, чтобы открыть программу.";
+      scheduleReconnectWorker(120000);
+    }
+  });
 }
 
 async function login(event) {
   event.preventDefault();
-  serverUrlInput.value = loginServerUrlInput.value.trim();
+  serverUrlInput.value = normalizeServerUrl(loginServerUrlInput.value);
+  loginServerUrlInput.value = serverUrlInput.value;
   usernameInput.value = loginUsernameInput.value.trim();
   passwordInput.value = loginPasswordInput.value;
   saveSyncSettings();
@@ -2584,43 +2774,48 @@ async function login(event) {
   }
 
   loginStatus.textContent = "Проверяю пароль...";
-  const online = await runHealthCheck("login");
 
-  if (online) {
-    try {
-      const bootstrap = await invoke("login_and_bootstrap", { settings });
-      applyBootstrap(bootstrap);
-      rememberSuccessfulLogin(settings, bootstrap);
-      await rememberSuccessfulPassword(settings);
-      showLocalUi();
-      syncPanel.classList.add("is-hidden");
-      setStatus("Вход выполнен. Локальная база открыта, синхронизация пойдёт в фоне.");
-      SyncService.start();
-      scheduleReconnectWorker(120000);
-      return;
-    } catch (error) {
-      console.error(error);
-      loginStatus.textContent = `Неверный логин или пароль. Локальная база не открыта.`;
-      setStatus("Вход не выполнен.");
-      return;
-    }
+  // Сначала мгновенная проверка локального пароля (не нужна сеть)
+  const offlineAllowed = await canOpenOfflineWithPassword(settings);
+  if (offlineAllowed) {
+    const offlineBootstrap = restoreOfflineBootstrap();
+    if (offlineBootstrap) applyBootstrap(offlineBootstrap);
+    showLocalUi();
+    syncPanel.classList.add("is-hidden");
+    setStatus("Локальная база открыта. Синхронизация пойдёт в фоне.");
+    SyncService.start();
+    scheduleReconnectWorker(30000);
+    maybePromptTouchId();
+    return;
   }
 
-  const offlineAllowed = await canOpenOfflineWithPassword(settings);
-  if (!offlineAllowed) {
+  // Локальный пароль не совпал — нужен сервер
+  loginStatus.textContent = "Проверяю через сервер...";
+  const online = await runHealthCheck("login");
+
+  if (!online) {
     loginStatus.textContent = "Нет связи с сервером, и этот пароль не подтверждён локально. Локальная база не открыта.";
     setStatus("Вход не выполнен.");
     scheduleReconnectWorker(30000);
     return;
   }
 
-  const offlineBootstrap = restoreOfflineBootstrap();
-  if (offlineBootstrap) applyBootstrap(offlineBootstrap);
-  showLocalUi();
-  syncPanel.classList.add("is-hidden");
-  setStatus("Офлайн-режим. Пароль совпал с последним успешным входом, показаны данные из локальной базы.");
-  SyncService.start();
-  scheduleReconnectWorker(30000);
+  try {
+    const bootstrap = await invoke("login_and_bootstrap", { settings });
+    applyBootstrap(bootstrap);
+    rememberSuccessfulLogin(settings, bootstrap);
+    await rememberSuccessfulPassword(settings);
+    showLocalUi();
+    syncPanel.classList.add("is-hidden");
+    setStatus("Вход выполнен. Локальная база открыта, синхронизация пойдёт в фоне.");
+    SyncService.start();
+    scheduleReconnectWorker(120000);
+    maybePromptTouchId();
+  } catch (error) {
+    console.error(error);
+    loginStatus.textContent = `Неверный логин или пароль. Локальная база не открыта.`;
+    setStatus("Вход не выполнен.");
+  }
 }
 
 window.addEventListener("DOMContentLoaded", async () => {
@@ -2662,23 +2857,23 @@ window.addEventListener("DOMContentLoaded", async () => {
     setStatus(`Ошибка локальной базы: ${error}`);
   }
 
-  document.querySelector("#parts-add-btn").addEventListener("click", () => applyPartsAdjustment("add"));
-  document.querySelector("#parts-subtract-btn").addEventListener("click", () => applyPartsAdjustment("subtract"));
-  partsAdjustInput.addEventListener("input", () => {
-    partsAdjustInput.value = String(partsAdjustInput.value || "").replace(/\D/g, "").replace(/^0+(?=\d)/, "");
-  });
-  partsAdjustInput.addEventListener("keydown", (event) => {
-    if (event.key === "Enter") {
-      event.preventDefault();
-      applyPartsAdjustment("add");
-    }
-  });
-  partsInput.addEventListener("input", updateRecordTotal);
-  servicesInput.addEventListener("input", updateRecordTotal);
-  servicesInput.addEventListener("blur", () => {
-    normalizeAmountField(servicesInput);
-    updateRecordTotal();
-  });
+  function applyMoneyFieldBehavior(input) {
+    input.addEventListener("focus", () => {
+      if (input.value === "0") input.value = "";
+    });
+    input.addEventListener("input", () => {
+      const raw = String(input.value || "").replace(/\D/g, "");
+      input.value = raw ? raw.replace(/^0+(?=\d)/, "") : "";
+      updateRecordTotal();
+    });
+    input.addEventListener("blur", () => {
+      normalizeAmountField(input);
+      updateRecordTotal();
+      updateRecordSubmitState();
+    });
+  }
+  applyMoneyFieldBehavior(partsInput);
+  applyMoneyFieldBehavior(servicesInput);
   newRecordPhoneInput.addEventListener("focus", () => {
     if (!newRecordPhoneInput.value.trim()) newRecordPhoneInput.value = "+7";
   });
@@ -2772,11 +2967,19 @@ window.addEventListener("DOMContentLoaded", async () => {
   assemblyList.addEventListener("click", async (event) => {
     const deleteButton = event.target.closest(".assembly-chip-delete");
     if (deleteButton) {
-      try {
-        await deleteAssemblyEntry(deleteButton.dataset.assemblyEntryId);
-      } catch (error) {
-        console.error(error);
-        setStatus(`Не удалось удалить сборку: ${error}`);
+      const entryId = deleteButton.dataset.assemblyEntryId;
+      console.debug(`[assembly] clicked delete, entry_id=${entryId}`);
+      const confirmed = await showConfirm("Удалить запись сборки?");
+      console.debug(`[assembly] confirm=${confirmed}`);
+      if (confirmed) {
+        console.debug(`[assembly] delete request started, entry_id=${entryId}`);
+        try {
+          await deleteAssemblyEntry(entryId);
+          console.debug(`[assembly] delete success, entry_id=${entryId}`);
+        } catch (error) {
+          console.error(`[assembly] delete error:`, error);
+          setStatus(`Не удалось удалить сборку: ${error}`);
+        }
       }
       return;
     }
@@ -2821,11 +3024,17 @@ window.addEventListener("DOMContentLoaded", async () => {
   advancesList?.addEventListener("click", async (event) => {
     const deleteButton = event.target.closest(".adv-chip-delete");
     if (deleteButton) {
-      if (window.confirm("Удалить аванс? Это действие нельзя отменить.")) {
+      const localId = deleteButton.dataset.advanceId;
+      console.debug(`[advances] clicked delete, local_id=${localId}`);
+      const confirmed = await showConfirm("Удалить запись аванса? Это действие нельзя отменить.");
+      console.debug(`[advances] confirm=${confirmed}`);
+      if (confirmed) {
+        console.debug(`[advances] delete request started, local_id=${localId}`);
         try {
-          await deleteAdvance(deleteButton.dataset.advanceId);
+          await deleteAdvance(localId);
+          console.debug(`[advances] delete success, local_id=${localId}`);
         } catch (error) {
-          console.error(error);
+          console.error(`[advances] delete error:`, error);
           setStatus(`Не удалось удалить аванс: ${error}`);
         }
       }
@@ -2947,14 +3156,40 @@ window.addEventListener("DOMContentLoaded", async () => {
     }
   });
   loginForm.addEventListener("submit", login);
-  headerSearchForm.addEventListener("submit", (event) => {
-    event.preventDefault();
+  function openSearch() {
     const query = headerPhoneSearch.value.trim();
+    if (!query) return;
+    if (state.currentView !== "records-search") {
+      state.previousView = state.currentView;
+      console.debug("[search] previousView saved:", state.previousView);
+    }
+    console.debug("[search] search opened");
     switchView("records-search");
     renderHeaderSearchResults(query);
+  }
+
+  function closeSearch() {
+    const target = state.previousView || "records";
+    state.previousView = null;
+    console.debug("[search] search cleared, returned to:", target);
+    switchView(target);
+  }
+
+  headerSearchForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    openSearch();
   });
+
+  // Обрабатываем очистку: input (Backspace/ввод) и search (× кнопка в WebKit)
+  function handleSearchInput() {
+    if (headerPhoneSearch.value === "" && state.currentView === "records-search") {
+      closeSearch();
+    }
+  }
+  headerPhoneSearch.addEventListener("input", handleSearchInput);
+  headerPhoneSearch.addEventListener("search", handleSearchInput);
   logoutButton.addEventListener("click", logout);
-  refreshButton.addEventListener("click", () => SyncService.runNow());
+  document.querySelector("#sync-run-btn")?.addEventListener("click", () => SyncService.runNow());
   syncButton.addEventListener("click", syncPendingRecords);
   updateRecordTotal();
 
@@ -2974,6 +3209,28 @@ window.addEventListener("DOMContentLoaded", async () => {
   document.querySelector("#sd-operator").addEventListener("click", () => { settingsDropdown.classList.add("is-hidden"); switchView("operator"); });
   document.querySelector("#sd-admin").addEventListener("click", () => { settingsDropdown.classList.add("is-hidden"); switchView("users"); });
   document.querySelector("#sd-shop").addEventListener("click", () => { settingsDropdown.classList.add("is-hidden"); switchView("shop"); });
+
+  initTouchId();
+
+  // ── Collapsible filter in journal ────────────────────────────────
+  const filterToggle = document.querySelector("#journal-filter-toggle");
+  const filterBody   = document.querySelector("#journal-filter-body");
+  if (filterToggle && filterBody) {
+    filterToggle.addEventListener("click", () => {
+      const isOpen = filterBody.classList.toggle("is-open");
+      filterToggle.setAttribute("aria-expanded", String(isOpen));
+    });
+  }
+
+  // ── Collapsible KPI summary in journal ───────────────────────────
+  const kpiToggle = document.querySelector("#journal-kpi-toggle");
+  const kpiBody   = document.querySelector("#journal-kpi-body");
+  if (kpiToggle && kpiBody) {
+    kpiToggle.addEventListener("click", () => {
+      const isOpen = kpiBody.classList.toggle("is-open");
+      kpiToggle.setAttribute("aria-expanded", String(isOpen));
+    });
+  }
 
   // ── Admin views init ──────────────────────────────────────────────
   initTimesheetView();
@@ -3021,7 +3278,7 @@ window.addEventListener("DOMContentLoaded", async () => {
 
 function getSettings() {
   return {
-    server_url: (serverUrlInput.value || loginServerUrlInput.value || "http://localhost:8000").trim(),
+    server_url: normalizeServerUrl(serverUrlInput.value || loginServerUrlInput.value),
     username: (usernameInput.value || loginUsernameInput.value || "").trim(),
     password: passwordInput.value || loginPasswordInput.value || "",
   };
@@ -3032,8 +3289,29 @@ function getToken() {
 }
 
 async function apiRequest(method, path, body = null) {
-  const serverUrl = getSettings().server_url;
-  const token = getToken();
+  const settings = currentSettings();
+  const serverUrl = settings.server_url;
+  let token = getToken();
+
+  // Токен пустой — случается после офлайн-входа (access_token не хранится в localStorage).
+  // Пробуем получить свежий, если сеть доступна.
+  if (!token && hasSyncCredentials(settings) && state.network.online) {
+    try {
+      const freshBootstrap = await invoke("login_and_bootstrap", { settings });
+      applyBootstrap(freshBootstrap);
+      token = getToken();
+      console.debug(`[api] token refreshed for ${method} ${path} — scheme=Bearer len=${token.length}`);
+    } catch (err) {
+      console.warn(`[api] token refresh failed for ${method} ${path}:`, String(err).slice(0, 120));
+    }
+  }
+
+  if (!token) {
+    console.warn(`[api] ${method} ${path} — token MISSING, request will fail`);
+  } else {
+    console.debug(`[api] ${method} ${path} — auth=Bearer present`);
+  }
+
   const args = { serverUrl, token, method, path };
   if (body !== null) args.body = body;
   return invoke("api_request", args);
@@ -3057,6 +3335,68 @@ function showToast(message, isError = false) {
     toast.classList.remove("toast--visible");
     setTimeout(() => toast.remove(), 300);
   }, 3500);
+}
+
+function showToastWithAction(message, actionLabel, actionFn) {
+  const container = document.querySelector("#toast-container");
+  if (!container) return;
+  const toast = document.createElement("div");
+  toast.className = "toast toast--action";
+
+  const msgSpan = document.createElement("span");
+  msgSpan.textContent = message;
+
+  const btn = document.createElement("button");
+  btn.className = "toast__action-btn";
+  btn.textContent = actionLabel;
+  btn.addEventListener("click", () => {
+    toast.classList.remove("toast--visible");
+    setTimeout(() => toast.remove(), 300);
+    actionFn();
+  });
+
+  toast.append(msgSpan, btn);
+  container.append(toast);
+  requestAnimationFrame(() => toast.classList.add("toast--visible"));
+  setTimeout(() => {
+    toast.classList.remove("toast--visible");
+    setTimeout(() => toast.remove(), 300);
+  }, 9000);
+}
+
+function showConfirm(message, okLabel = "Удалить") {
+  return new Promise((resolve) => {
+    const dialog = document.querySelector("#confirm-dialog");
+    const msgEl  = document.querySelector("#confirm-dialog-message");
+    const okBtn  = document.querySelector("#confirm-dialog-ok");
+    const cancelBtn = document.querySelector("#confirm-dialog-cancel");
+    if (!dialog) { resolve(false); return; }
+
+    msgEl.textContent = message;
+    okBtn.textContent = okLabel;
+
+    const cleanup = (result) => {
+      dialog.removeEventListener("keydown", onKey);
+      dialog.removeEventListener("click",   onBackdrop);
+      okBtn.removeEventListener("click",    onOk);
+      cancelBtn.removeEventListener("click", onCancel);
+      dialog.close();
+      resolve(result);
+    };
+
+    const onOk     = () => cleanup(true);
+    const onCancel = () => cleanup(false);
+    const onKey    = (e) => { if (e.key === "Enter") { e.preventDefault(); cleanup(true); } };
+    const onBackdrop = (e) => { if (e.target === dialog) cleanup(false); };
+
+    okBtn.addEventListener("click",    onOk);
+    cancelBtn.addEventListener("click", onCancel);
+    dialog.addEventListener("keydown", onKey);
+    dialog.addEventListener("click",   onBackdrop);
+
+    dialog.showModal();
+    okBtn.focus();
+  });
 }
 
 // ── БУХГАЛТЕРИЯ ───────────────────────────────────────────────────────────────
@@ -4144,8 +4484,9 @@ function renderShopTable(products) {
     return;
   }
   for (const p of products) {
+    const imageUrl = normalizeResourceUrl(p.image_url);
     const imgHtml = p.image_url
-      ? `<img src="${p.image_url}" alt="${p.name}" class="admin-image-thumb" />`
+      ? `<img src="${imageUrl}" alt="${p.name}" class="admin-image-thumb" />`
       : '<span class="text-muted">—</span>';
     const tr = document.createElement("tr");
     tr.innerHTML = `
@@ -4194,8 +4535,9 @@ function renderShopTable(products) {
       document.querySelector("#shop-product-available").checked = product.is_available;
       fillShopCategorySelect();
       document.querySelector("#shop-product-category").value = product.category_id;
+      const imageUrl = normalizeResourceUrl(product.image_url);
       document.querySelector("#shop-product-image-preview").innerHTML = product.image_url
-        ? `<img src="${product.image_url}" alt="preview" class="admin-image-thumb" />`
+        ? `<img src="${imageUrl}" alt="preview" class="admin-image-thumb" />`
         : "";
       document.querySelector("#shop-product-modal").showModal();
     } else if (action === "del") {
