@@ -266,6 +266,22 @@ fn set_sync_state(conn: &Connection, key: &str, value: &str) -> Result<(), Strin
     Ok(())
 }
 
+fn current_utc_marker(conn: &Connection) -> Result<String, String> {
+    conn.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now')", [], |row| {
+        row.get::<_, String>(0)
+    })
+    .map_err(|error| error.to_string())
+}
+
+fn pending_count(conn: &Connection, table: &str) -> Result<i64, String> {
+    conn.query_row(
+        &format!("SELECT COUNT(*) FROM {table} WHERE sync_status IN ('pending', 'error')"),
+        [],
+        |row| row.get::<_, i64>(0),
+    )
+    .map_err(|error| error.to_string())
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -2302,11 +2318,39 @@ fn pull_assembly_orders(app: tauri::AppHandle, settings: SyncSettings) -> Result
 fn get_sync_info(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
     let conn = open_database(&app)?;
     let last_sync = get_sync_state(&conn, "last_records_sync_at");
+    let last_successful_sync_at = get_sync_state(&conn, "last_successful_sync_at");
     let is_first = last_sync.is_none();
     Ok(json!({
         "last_records_sync_at": last_sync,
+        "last_successful_sync_at": last_successful_sync_at,
         "is_first_sync": is_first,
     }))
+}
+
+#[tauri::command]
+fn get_pending_sync_summary(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    let conn = open_database(&app)?;
+    let records = pending_count(&conn, "records")?;
+    let assemblies = pending_count(&conn, "assemblies")?;
+    let advances = pending_count(&conn, "employee_advances")?;
+    let orders = pending_count(&conn, "assembly_orders")?;
+    Ok(json!({
+        "records": records,
+        "assemblies": assemblies,
+        "advances": advances,
+        "orders": orders,
+        "total": records + assemblies + advances + orders,
+        "last_successful_sync_at": get_sync_state(&conn, "last_successful_sync_at"),
+        "last_records_sync_at": get_sync_state(&conn, "last_records_sync_at"),
+    }))
+}
+
+#[tauri::command]
+fn mark_sync_success(app: tauri::AppHandle) -> Result<String, String> {
+    let conn = open_database(&app)?;
+    let marker = current_utc_marker(&conn)?;
+    set_sync_state(&conn, "last_successful_sync_at", &marker)?;
+    Ok(marker)
 }
 
 /// Clears the incremental sync cursor so the next pull_records does a full sync.
@@ -2937,6 +2981,8 @@ pub fn run() {
             sync_records,
             api_request,
             get_sync_info,
+            get_pending_sync_summary,
+            mark_sync_success,
             reset_sync,
             check_biometric_available,
             save_credentials_to_keychain,

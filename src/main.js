@@ -1,3 +1,10 @@
+import {
+  getSyncStatusMessage,
+  parseSyncDate,
+  shouldShowLongSyncWarning,
+  shouldAutoSyncAfterReconnect,
+} from "./sync-status.js";
+
 const { invoke } = window.__TAURI__.core;
 
 const DEFAULT_SERVER_URL = "https://velo95moto.ru";
@@ -134,6 +141,13 @@ const state = {
   currentView: "records",
   pendingRecords: 0,
   pendingAssemblies: 0,
+  pendingAdvances: 0,
+  pendingOrders: 0,
+  pendingTotal: 0,
+  lastSuccessfulSyncAt: null,
+  longSyncWarningVisible: false,
+  syncUiStatus: "idle",
+  syncUiMessage: "Ожидание",
   records: [],
   assemblyOrders: [],
   employeeAdvances: [],
@@ -214,6 +228,25 @@ function setStatus(message, isError = false) {
   if (message) showToast(message, isError);
 }
 
+function setSyncUiStatus(status, message = "") {
+  state.syncUiStatus = status;
+  state.syncUiMessage = message;
+  if (typeof SyncService !== "undefined") SyncService.renderIndicator();
+}
+
+function hasPendingLocalChanges() {
+  return Number(state.pendingTotal || 0) > 0;
+}
+
+function updateLongSyncWarning() {
+  const shouldWarn = shouldShowLongSyncWarning({
+    pendingTotal: state.pendingTotal,
+    lastSuccessfulSyncAt: state.lastSuccessfulSyncAt,
+  });
+  state.longSyncWarningVisible = shouldWarn;
+  if (typeof SyncService !== "undefined") SyncService.renderIndicator();
+}
+
 function loadSyncSettings() {
   if (localStorage.getItem("dataProfile") !== DATA_PROFILE) {
     localStorage.removeItem("lastAuthHash");
@@ -292,6 +325,7 @@ async function runHealthCheck(source = "startup") {
   if (!settings.server_url) {
     state.network.online = false;
     state.network.mode = "offline";
+    setSyncUiStatus("offline", "Нет интернета");
     return false;
   }
 
@@ -304,12 +338,14 @@ async function runHealthCheck(source = "startup") {
     state.network.lastHealth = result;
     state.network.online = Boolean(result.online);
     state.network.mode = result.online ? "online" : "offline";
+    if (!state.network.online) setSyncUiStatus("offline", "Нет интернета");
     const duration = result.duration_ms ?? Math.round(performance.now() - started);
     console.info(`[offline-startup] health-check source=${source} online=${state.network.online} duration_ms=${duration}`);
     return state.network.online;
   } catch (error) {
     state.network.online = false;
     state.network.mode = "offline";
+    setSyncUiStatus("offline", "Нет интернета");
     console.warn(`[offline-startup] health-check source=${source} failed`, error);
     return false;
   }
@@ -322,7 +358,8 @@ function scheduleReconnectWorker(delayMs = state.network.online ? 120000 : 30000
     console.info(`[offline-startup] reconnect attempt=${state.network.reconnectAttempts}`);
     const wasOnline = state.network.online;
     const isOnline = await runHealthCheck("reconnect");
-    if (isOnline && !wasOnline) {
+    await refreshPendingSyncSummary();
+    if (shouldAutoSyncAfterReconnect({ wasOnline, isOnline, pendingTotal: state.pendingTotal })) {
       queueBackgroundSync("reconnect", "Данные синхронизированы после восстановления связи.");
     }
     scheduleReconnectWorker(isOnline ? 120000 : 30000);
@@ -1314,6 +1351,7 @@ async function createAssemblyOrder(event) {
     assemblyOrderQuantity.value = "1";
     assemblyOrderCreateStatus.textContent = `Создано заказов: ${created}.`;
     await loadAssemblyOrders();
+    await refreshPendingSyncSummary();
     queueBackgroundSync("assembly-order-create", "Заказ сборки синхронизирован с сайтом.");
   } catch (error) {
     console.error(error);
@@ -1328,6 +1366,7 @@ async function changeAssemblyOrder(orderId, action, collectorName = "") {
     collectorName: collectorName || null,
   });
   await loadAssemblyOrders();
+  await refreshPendingSyncSummary();
   queueBackgroundSync("assembly-order-update", "Изменения заказа синхронизированы с сайтом.");
 }
 
@@ -1427,7 +1466,8 @@ async function saveAssemblyForCollector(collectorName, amountInput, button) {
       },
     });
     amountInput.value = "0";
-    loadAssemblies(); // без await — чип появляется в фоне, кнопка разблокируется сразу
+    await loadAssemblies();
+    await refreshPendingSyncSummary();
   } catch (error) {
     console.error(error);
     setStatus(`Ошибка сохранения сборки: ${error}`);
@@ -1598,11 +1638,24 @@ function renderAdvances() {
   }).join("");
 }
 
+async function refreshTodayAdvancesFromSite() {
+  if (!hasSyncCredentials()) return false;
+  const online = state.network.online || await runHealthCheck("advances-open");
+  if (!online) return false;
+  await invoke("pull_all_today", { settings: currentSettings() });
+  return true;
+}
+
 async function loadAdvancesView() {
   const today = todayIsoDate();
   if (advancesDate) advancesDate.textContent = advanceDateLabel(today);
   const t0 = performance.now();
   try {
+    try {
+      await refreshTodayAdvancesFromSite();
+    } catch (syncError) {
+      console.warn("[advances] server refresh skipped", syncError);
+    }
     state.employeeAdvances = await invoke("list_employee_advances", { date: today });
     console.debug(`[advances] loaded ${state.employeeAdvances.length} rows for ${today} in ${Math.round(performance.now() - t0)}ms (local DB only)`);
     renderAdvances();
@@ -1633,6 +1686,7 @@ async function saveAdvanceForEmployee(employeeName, input, button) {
     input.value = "";
     state.employeeAdvances = await invoke("list_employee_advances", { date: advanceDate });
     renderAdvances();
+    await refreshPendingSyncSummary();
     setStatus("Аванс сохранён локально.");
     queueBackgroundSync("advance-save", "Аванс синхронизирован с сайтом.");
   } catch (error) {
@@ -2425,12 +2479,45 @@ async function refreshAll() {
     renderAssemblyOrders(assemblyOrderCreateList);
     renderAssemblyOrders(assemblyOrdersList);
   }
+  await refreshPendingSyncSummary();
+}
+
+async function refreshPendingSyncSummary() {
+  try {
+    const summary = await invoke("get_pending_sync_summary");
+    state.pendingRecords = Number(summary.records || 0);
+    state.pendingAssemblies = Number(summary.assemblies || 0);
+    state.pendingAdvances = Number(summary.advances || 0);
+    state.pendingOrders = Number(summary.orders || 0);
+    state.pendingTotal = Number(summary.total || 0);
+    state.lastSuccessfulSyncAt = summary.last_successful_sync_at || summary.last_records_sync_at || state.lastSuccessfulSyncAt;
+  } catch (error) {
+    console.warn("[sync] pending summary unavailable", error);
+    state.pendingTotal = state.pendingRecords + state.pendingAssemblies + state.pendingAdvances + state.pendingOrders;
+  }
+  updateSyncButton();
+  updateLongSyncWarning();
+}
+
+function syncStatusMessage() {
+  return getSyncStatusMessage({
+    syncInProgress: state.network.syncInProgress,
+    uiStatus: state.syncUiStatus,
+    online: state.network.online,
+    longWarningVisible: state.longSyncWarningVisible,
+    pendingTotal: state.pendingTotal,
+    lastSuccessfulSyncAt: state.lastSuccessfulSyncAt,
+    uiMessage: state.syncUiMessage,
+  });
 }
 
 function updateSyncButton() {
-  const count = state.pendingRecords + state.pendingAssemblies;
+  const count = Number(state.pendingTotal || (state.pendingRecords + state.pendingAssemblies + state.pendingAdvances + state.pendingOrders));
   syncButton.classList.toggle("sync-hidden", count <= 0);
+  syncButton.disabled = state.network.syncInProgress;
   syncButton.textContent = count > 0 ? `Синхр. ${count}` : "Синхр.";
+  syncButton.title = syncStatusMessage();
+  if (typeof SyncService !== "undefined") SyncService.renderIndicator();
 }
 
 function validateRecord(formData, parts, services) {
@@ -2486,11 +2573,13 @@ async function saveRecord(event) {
       },
     });
     recordForm.reset();
+    clientNameInput.value = "Клиент";
     partsInput.value = "0";
     servicesInput.value = "0";
     updateRecordTotal();
     updateRecordSubmitState();
     await loadRecords();
+    await refreshPendingSyncSummary();
     switchView("records");
     setStatus(`Запись L-${localId} сохранена локально. Синхронизация пойдёт в фоне.`);
     queueBackgroundSync("record-save", `Запись L-${localId} синхронизирована с сайтом.`);
@@ -2502,6 +2591,7 @@ async function saveRecord(event) {
 
 async function syncPendingRecords() {
   saveSyncSettings();
+  await refreshPendingSyncSummary();
   const settings = currentSettings();
   if (!settings.server_url) {
     setStatus("Укажите адрес сайта.");
@@ -2524,18 +2614,23 @@ async function syncNow(successMessage = "Действие синхронизир
   const settings = currentSettings();
   if (!hasSyncCredentials(settings)) {
     await refreshAll();
+    if (!options.background) setStatus("Введите логин и пароль от сайта.", true);
     return false;
   }
   if (state.network.syncInProgress) {
     console.info(`[offline-startup] sync skipped reason=${options.reason || "background"} already_running=true`);
+    if (!options.background) setStatus("Синхронизация уже выполняется.");
     return false;
   }
 
   try {
+    setSyncUiStatus("syncing", "Синхронизация...");
     if (!state.network.online || options.forceHealth) {
       const online = await runHealthCheck(options.reason || "sync");
       if (!online) {
         await refreshAll();
+        setSyncUiStatus("offline", "Нет интернета");
+        if (!options.background) setStatus("Нет подключения к интернету.", true);
         console.info(`[offline-startup] sync deferred reason=${options.reason || "background"} mode=offline`);
         return false;
       }
@@ -2546,6 +2641,8 @@ async function syncNow(successMessage = "Действие синхронизир
     const message = await invoke("sync_records", { settings });
     await invoke("pull_records", { settings });
     await invoke("pull_all_today", { settings });
+    state.lastSuccessfulSyncAt = await invoke("mark_sync_success");
+    setSyncUiStatus("ok", "Синхронизировано");
     await refreshAll();
     if (successMessage && !options.background) setStatus(successMessage);
     else if (message.includes("уже отметили")) setStatus(message);
@@ -2555,11 +2652,14 @@ async function syncNow(successMessage = "Действие синхронизир
     console.error(error);
     state.network.online = false;
     state.network.mode = "offline";
+    setSyncUiStatus("error", "Ошибка синхронизации");
     console.warn(`[offline-startup] sync error reason=${options.reason || "background"}`, error);
+    if (!options.background) setStatus(`Ошибка синхронизации: ${error}`, true);
     await refreshAll();
     return false;
   } finally {
     state.network.syncInProgress = false;
+    updateSyncButton();
   }
 }
 
@@ -2577,34 +2677,41 @@ const SyncService = (() => {
     if (!el) return;
     const timeEl    = el.querySelector(".sync-widget__time");
     const statusEl  = el.querySelector(".sync-widget__status");
+    const labelEl   = el.querySelector(".sync-widget__label");
     const btn       = el.querySelector(".sync-widget__btn");
+    const label = syncStatusMessage();
+    const lastDate = parseSyncDate(state.lastSuccessfulSyncAt);
+    const lastText = lastDate
+      ? lastDate.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })
+      : "--:--";
+    if (labelEl) labelEl.textContent = label;
+    if (statusEl) statusEl.title = label;
+    if (btn) {
+      btn.disabled = state.network.syncInProgress;
+      btn.title = state.network.syncInProgress ? "Идет синхронизация данных" : label;
+    }
 
     if (state.network.syncInProgress) {
       el.className = "sync-widget sync-widget--syncing";
       if (timeEl)   timeEl.textContent = "...";
-      if (statusEl) statusEl.title = "Идет синхронизация данных";
-      if (btn)      { btn.disabled = true;  btn.title = "Идет синхронизация данных"; }
-    } else if (_error) {
+    } else if (state.longSyncWarningVisible) {
+      el.className = "sync-widget sync-widget--warning";
+      if (timeEl)   timeEl.textContent = lastText;
+    } else if ((_error && state.syncUiStatus !== "ok") || state.syncUiStatus === "error") {
       el.className = "sync-widget sync-widget--error";
       if (timeEl)   timeEl.textContent = "Ошибка";
-      if (statusEl) statusEl.title = "Ошибка синхронизации. Нажмите, чтобы повторить";
-      if (btn)      { btn.disabled = false; btn.title = "Повторить синхронизацию"; }
-    } else if (_offline) {
+    } else if (_offline || state.syncUiStatus === "offline" || !state.network.online) {
       el.className = "sync-widget sync-widget--offline";
       if (timeEl)   timeEl.textContent = "--:--";
-      if (statusEl) statusEl.title = "Нет соединения с сервером";
-      if (btn)      { btn.disabled = false; btn.title = "Обновить данные"; }
-    } else if (_lastSyncAt) {
-      const t = _lastSyncAt.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
+    } else if (hasPendingLocalChanges()) {
+      el.className = "sync-widget sync-widget--pending";
+      if (timeEl)   timeEl.textContent = lastText;
+    } else if (_lastSyncAt || state.lastSuccessfulSyncAt) {
       el.className = "sync-widget sync-widget--ok";
-      if (timeEl)   timeEl.textContent = t;
-      if (statusEl) statusEl.title = `Последняя синхронизация: ${t}`;
-      if (btn)      { btn.disabled = false; btn.title = "Обновить данные"; }
+      if (timeEl)   timeEl.textContent = lastText;
     } else {
       el.className = "sync-widget sync-widget--idle";
       if (timeEl)   timeEl.textContent = "--:--";
-      if (statusEl) statusEl.title = "Ожидание синхронизации";
-      if (btn)      { btn.disabled = false; btn.title = "Обновить данные"; }
     }
   }
 
@@ -2619,10 +2726,13 @@ const SyncService = (() => {
         _offline = false;
       } else if (!state.network.online) {
         _offline = true;
+      } else if (hasPendingLocalChanges()) {
+        _error = "Синхронизация не завершилась";
       }
     } catch (e) {
       _error = String(e).slice(0, 80);
       _offline = false;
+      setSyncUiStatus("error", "Ошибка синхронизации");
     }
     _renderIndicator();
   }
@@ -2820,6 +2930,7 @@ async function pullFromSite(reason = "Обновляю данные с сайт�
     const bootstrap = await invoke("login_and_bootstrap", { settings });
     applyBootstrap(bootstrap);
     await invoke("pull_records", { settings });
+    await invoke("pull_all_today", { settings });
     await refreshAll();
     if (!isAuto) {
       setStatus(`Синхронизировано в ${new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })}.`);
@@ -3026,13 +3137,15 @@ window.addEventListener("DOMContentLoaded", async () => {
       if (syncInfo.is_first_sync) {
         setStatus("Введите логин и пароль, чтобы загрузить данные с сайта.");
       } else {
-        const ts = syncInfo.last_records_sync_at;
+        state.lastSuccessfulSyncAt = syncInfo.last_successful_sync_at || syncInfo.last_records_sync_at || state.lastSuccessfulSyncAt;
+        const ts = state.lastSuccessfulSyncAt;
         const dt = ts ? new Date(ts) : null;
         const timeStr = dt
           ? dt.toLocaleTimeString("ru-RU", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })
           : "—";
         setStatus(`Последняя синхронизация: ${timeStr}. Данные из локальной базы.`);
       }
+      await refreshPendingSyncSummary();
     } catch {
       setStatus("Данные из локальной базы.");
     }
@@ -3374,8 +3487,22 @@ window.addEventListener("DOMContentLoaded", async () => {
   headerPhoneSearch.addEventListener("input", handleSearchInput);
   headerPhoneSearch.addEventListener("search", handleSearchInput);
   logoutButton.addEventListener("click", logout);
-  document.querySelector("#sync-run-btn")?.addEventListener("click", () => SyncService.runNow());
+  document.querySelector("#brand-title-btn")?.addEventListener("click", () => switchView("records"));
+  document.querySelector("#sync-run-btn")?.addEventListener("click", syncPendingRecords);
   syncButton.addEventListener("click", syncPendingRecords);
+  window.addEventListener("offline", () => {
+    state.network.online = false;
+    state.network.mode = "offline";
+    setSyncUiStatus("offline", "Нет интернета");
+    setStatus("Нет интернета.");
+  });
+  window.addEventListener("online", async () => {
+    const online = await runHealthCheck("browser-online");
+    if (online) {
+      await refreshPendingSyncSummary();
+      if (hasPendingLocalChanges()) queueBackgroundSync("browser-online", "Данные синхронизированы после восстановления связи.");
+    }
+  });
   updateRecordTotal();
 
   settingsButton.addEventListener("click", (event) => {

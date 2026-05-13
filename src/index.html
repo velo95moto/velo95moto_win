@@ -44,7 +44,7 @@
     <main class="app-shell is-locked" id="app-shell">
       <nav class="site-nav">
         <div class="brand-mark">🛠</div>
-        <div class="brand-title">Мастерская Вело 95 Мото</div>
+        <button class="brand-title" id="brand-title-btn" type="button">Мастерская Вело 95 Мото</button>
         <div class="nav-items" id="nav-items"></div>
         <div class="nav-spacer"></div>
         <form class="header-search" id="header-search-form">
@@ -103,6 +103,7 @@
           <div class="sync-widget__status" id="sync-status-area">
             <span class="sync-widget__dot"></span>
             <span class="sync-widget__time">--:--</span>
+            <span class="sync-widget__label">Ожидание</span>
           </div>
           <button class="sync-widget__btn" id="sync-run-btn" type="button" title="Обновить данные" aria-label="Обновить данные">
             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.2" stroke="currentColor" width="17" height="17">
@@ -329,7 +330,7 @@
             </label>
             <label>
               <span>Имя клиента *</span>
-              <input id="client-name" name="clientName" type="text" placeholder="Клиент" maxlength="50" required />
+              <input id="client-name" name="clientName" type="text" placeholder="Клиент" value="Клиент" maxlength="50" required />
             </label>
             <label>
               <span>Мастер *</span>

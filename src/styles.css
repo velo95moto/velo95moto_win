@@ -151,6 +151,11 @@ button { cursor: pointer; border: 0; }
   font-size: 20px;
   font-weight: 800;
   white-space: nowrap;
+  background: none;
+  border: none;
+  padding: 0;
+  color: inherit;
+  cursor: pointer;
 }
 
 .nav-tab {
@@ -326,6 +331,16 @@ button { cursor: pointer; border: 0; }
   transition: color 0.3s;
 }
 
+.sync-widget__label {
+  max-width: 132px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
 .sync-widget__btn {
   width: 32px;
   height: 32px;
@@ -356,13 +371,25 @@ button { cursor: pointer; border: 0; }
 .sync-widget--ok .sync-widget__dot  { background: #5cb85c; }
 .sync-widget--ok .sync-widget__time { color: rgba(255, 255, 255, 0.8); }
 
+/* pending */
+.sync-widget--pending .sync-widget__dot  { background: #f0b35a; }
+.sync-widget--pending .sync-widget__time,
+.sync-widget--pending .sync-widget__label { color: #f0c37c; }
+
+/* warning */
+.sync-widget--warning .sync-widget__dot  { background: #f0b35a; box-shadow: 0 0 0 4px rgba(240, 179, 90, 0.18); }
+.sync-widget--warning .sync-widget__time,
+.sync-widget--warning .sync-widget__label { color: #ffd18a; }
+
 /* error */
 .sync-widget--error .sync-widget__dot  { background: #e05c5c; }
-.sync-widget--error .sync-widget__time { color: #e05c5c; }
+.sync-widget--error .sync-widget__time,
+.sync-widget--error .sync-widget__label { color: #ff8d8d; }
 
 /* offline */
 .sync-widget--offline .sync-widget__dot  { background: rgba(255, 255, 255, 0.25); }
-.sync-widget--offline .sync-widget__time { color: rgba(255, 255, 255, 0.35); }
+.sync-widget--offline .sync-widget__time,
+.sync-widget--offline .sync-widget__label { color: rgba(255, 255, 255, 0.45); }
 
 @keyframes sync-spin {
   from { transform: rotate(0deg); }
