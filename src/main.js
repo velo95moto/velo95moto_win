@@ -425,8 +425,13 @@ function renderNavigation() {
     button.className = "nav-tab";
     button.type = "button";
     button.dataset.view = view;
-    button.textContent = item.label;
-    button.addEventListener("click", () => switchView(view));
+    if (view === "assembly-orders") {
+      button.innerHTML = `${escapeHtml(item.label)} <span id="assembly-orders-nav-badge" class="nav-live-badge is-hidden"></span>`;
+      button.addEventListener("click", () => { AssemblyOrderPoller.markSeen(); switchView(view); });
+    } else {
+      button.textContent = item.label;
+      button.addEventListener("click", () => switchView(view));
+    }
     if (view === "records" && canAddRecord) {
       const wrapper = document.createElement("div");
       wrapper.className = "nav-dropdown";
@@ -453,8 +458,9 @@ function renderNavigation() {
       const ordersButton = document.createElement("button");
       ordersButton.className = "nav-dropdown-item";
       ordersButton.type = "button";
-      ordersButton.textContent = "Заказы сборок";
-      ordersButton.addEventListener("click", () => switchView("assembly-orders"));
+      ordersButton.dataset.view = "assembly-orders";
+      ordersButton.innerHTML = 'Заказы сборок <span id="assembly-orders-nav-badge" class="nav-live-badge is-hidden"></span>';
+      ordersButton.addEventListener("click", () => { AssemblyOrderPoller.markSeen(); switchView("assembly-orders"); });
       menu.append(orderButton, ordersButton);
       wrapper.append(button, menu);
       navItems.append(wrapper);
@@ -1056,6 +1062,7 @@ async function notifyClient(record, method = "call") {
 
 function logout() {
   SyncService.stop();
+  AssemblyOrderPoller.stop();
   state.bootstrap = null;
   state.records = [];
   state.filteredRecords = [];
@@ -2635,6 +2642,131 @@ const SyncService = (() => {
   };
 })();
 
+const AssemblyOrderPoller = (() => {
+  const INTERVAL = 5000;
+  const STORAGE_KEY = "assemblyOrdersDesktopLastSeenId";
+  let _timer = null;
+  let _inFlight = false;
+  let _initialized = false;
+  let _lastSeenId = parseInt(localStorage.getItem(STORAGE_KEY) || "0", 10) || 0;
+  let _unseenCount = 0;
+  let _urgentCount = 0;
+  let _latestOrders = [];
+
+  function _saveSeen(id) {
+    _lastSeenId = id;
+    localStorage.setItem(STORAGE_KEY, String(id));
+  }
+
+  function _updateBadge() {
+    const badge = document.getElementById("assembly-orders-nav-badge");
+    if (!badge) return;
+    if (_unseenCount <= 0) {
+      badge.classList.add("is-hidden");
+    } else {
+      badge.textContent = _unseenCount > 99 ? "99+" : String(_unseenCount);
+      badge.classList.remove("is-hidden");
+    }
+  }
+
+  function _hideNotice() {
+    document.getElementById("assembly-orders-notice")?.remove();
+  }
+
+  function _showNotice() {
+    _hideNotice();
+    if (_unseenCount <= 0) return;
+    const urgentText = _urgentCount > 0 ? ` Срочных: ${_urgentCount}.` : "";
+    const names = _latestOrders.slice(-3).map((o) => o.name).filter(Boolean);
+    const text = names.length ? names.join(", ") : "Откройте список заказов сборок.";
+    const notice = document.createElement("div");
+    notice.id = "assembly-orders-notice";
+    notice.className = "assembly-orders-notice";
+    notice.innerHTML = `
+      <div class="assembly-orders-notice__main">
+        <div class="assembly-orders-notice__title">Новый заказ сборки: ${_unseenCount}${urgentText}</div>
+        <div class="assembly-orders-notice__text">${escapeHtml(text)}</div>
+      </div>
+      <div class="assembly-orders-notice__actions">
+        <button type="button" class="assembly-orders-notice__open">Открыть</button>
+        <button type="button" class="assembly-orders-notice__close" aria-label="Скрыть">×</button>
+      </div>`;
+    document.body.append(notice);
+    notice.querySelector(".assembly-orders-notice__open").addEventListener("click", () => {
+      AssemblyOrderPoller.markSeen();
+      switchView("assembly-orders");
+    });
+    notice.querySelector(".assembly-orders-notice__close").addEventListener("click", _hideNotice);
+  }
+
+  function _showDesktopNotification(orders) {
+    if (!("Notification" in window) || Notification.permission !== "granted") return;
+    const count = orders.length;
+    if (!count) return;
+    const urgentInBatch = orders.filter((o) => o.is_urgent).length;
+    const names = orders.slice(-3).map((o) => o.name).filter(Boolean);
+    let body = names.length ? names.join(", ") : "Откройте заказы сборок.";
+    if (urgentInBatch > 0) body += ` Срочных: ${urgentInBatch}.`;
+    const n = new Notification(count === 1 ? "Новый заказ сборки" : `Новые заказы сборки: ${count}`, {
+      body,
+      tag: "assembly-orders",
+    });
+    n.onclick = () => { AssemblyOrderPoller.markSeen(); switchView("assembly-orders"); n.close(); };
+  }
+
+  async function _poll() {
+    if (_inFlight || !state.network.online) return;
+    _inFlight = true;
+    try {
+      const query = !_initialized
+        ? "mobile/assembly/orders/?notifications&init=1"
+        : `mobile/assembly/orders/?notifications&last_seen_id=${_lastSeenId}`;
+      const data = await apiRequest("GET", query);
+      if (!_initialized) {
+        _saveSeen(data.last_seen_id ?? 0);
+        _initialized = true;
+        return;
+      }
+      const newOrders = data.orders || [];
+      if (!newOrders.length) return;
+      newOrders.forEach((o) => {
+        _unseenCount++;
+        if (o.is_urgent) _urgentCount++;
+        _latestOrders.push(o);
+        if (_latestOrders.length > 10) _latestOrders.shift();
+        if (o.id > _lastSeenId) _saveSeen(o.id);
+      });
+      _updateBadge();
+      _showNotice();
+      _showDesktopNotification(newOrders);
+    } catch (e) {
+      // offline or no permission — silent
+    } finally {
+      _inFlight = false;
+    }
+  }
+
+  return {
+    start() {
+      if (_timer) return;
+      if (Notification.permission === "default") Notification.requestPermission().catch(() => {});
+      _poll();
+      _timer = setInterval(_poll, INTERVAL);
+    },
+    stop() {
+      clearInterval(_timer);
+      _timer = null;
+      _initialized = false;
+    },
+    markSeen() {
+      _unseenCount = 0;
+      _urgentCount = 0;
+      _updateBadge();
+      _hideNotice();
+    },
+  };
+})();
+
 async function checkForUpdate() {
   try {
     const result = await invoke("check_for_update");
@@ -2836,6 +2968,7 @@ async function login(event) {
     scheduleReconnectWorker(30000);
     maybePromptTouchId();
     checkForUpdate();
+    if (state.bootstrap?.roles?.is_operator_role) AssemblyOrderPoller.start();
     return;
   }
 
@@ -2862,6 +2995,7 @@ async function login(event) {
     scheduleReconnectWorker(120000);
     maybePromptTouchId();
     checkForUpdate();
+    if (state.bootstrap?.roles?.is_operator_role) AssemblyOrderPoller.start();
   } catch (error) {
     console.error(error);
     loginStatus.textContent = `Неверный логин или пароль. Локальная база не открыта.`;
