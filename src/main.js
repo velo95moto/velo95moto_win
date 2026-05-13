@@ -864,8 +864,8 @@ function buildRecordActions(record) {
     : "Забрал";
   return `
     <div class="table-actions">
-      <button type="button" class="btn-action btn-action-icon view-details" data-id="${id}" title="Подробнее">▣</button>
-      <button type="button" class="btn-action btn-action-icon edit-record" data-id="${id}" title="Изменить">✎</button>
+      <button type="button" class="btn-action btn-action-icon view-details" data-id="${id}" title="Подробнее"><svg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'><path fill='currentColor' d='M13.586 2A2 2 0 0 1 15 2.586L19.414 7A2 2 0 0 1 20 8.414V20a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2ZM12 4H6v16h12V10h-4.5A1.5 1.5 0 0 1 12 8.5zm0 8a3 3 0 0 1 2.708 4.293l.706.707A1 1 0 1 1 14 18.414l-.707-.706A3 3 0 1 1 12 12m0 2a1 1 0 1 0 0 2 1 1 0 0 0 0-2m2-9.586V8h3.586z'/></svg></button>
+      <button type="button" class="btn-action btn-action-icon edit-record" data-id="${id}" title="Изменить"><svg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'><path fill='currentColor' d='M5 2a2 2 0 0 0-2 2v15a2 2 0 0 0 2 2h3v-2H5V4h12v4h2V4a2 2 0 0 0-2-2zm3 5a1 1 0 0 0 0 2h4a1 1 0 1 0 0-2zm7.949 3.811a3 3 0 0 1 4.242 4.243l-5.656 5.657a1 1 0 0 1-.707.293h-2.829a1 1 0 0 1-1-1v-2.829a1 1 0 0 1 .293-.707zm2.828 1.414a1 1 0 0 0-1.414 0l1.414 1.415a1 1 0 0 0 0-1.415m-1.414 2.829-1.414-1.414-3.95 3.95v1.414h1.414z'/></svg></button>
       <button type="button" class="btn-action btn-action-icon notify-client-btn ${notificationCount > 0 || record.client_notified ? "is-notified" : "is-pending"}" data-id="${id}" data-notification-tooltip="${escapeHtml(tooltip)}" aria-label="${escapeHtml(tooltip)}">
         <span class="notify-client-btn__bell">🔔</span>
         <span class="notify-client-btn__count ${notificationCount <= 0 ? "is-empty" : ""}">${notificationCount > 0 ? notificationCount : ""}</span>

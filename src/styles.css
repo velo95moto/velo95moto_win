@@ -602,12 +602,29 @@ h2 { font-size: 20px; font-weight: 900; }
 
 .btn-collect {
   color: #fff;
-  background: #4a5868;
+  background: linear-gradient(135deg, #4a5868, #344150);
+  border: 1px solid rgba(67, 82, 97, 0.45);
+  box-shadow: 0 12px 24px rgba(49, 60, 74, 0.18);
+}
+
+.btn-collect:hover,
+.btn-collect:focus {
+  background: linear-gradient(135deg, #556679, #2f3a46);
+  color: #fff;
 }
 
 .btn-collected {
   color: #fff;
-  background: #6c757d;
+  background: linear-gradient(135deg, #8fc7a4, #79b891);
+  border: 1px solid rgba(72, 145, 104, 0.24);
+  box-shadow: 0 12px 24px rgba(77, 136, 102, 0.16);
+  letter-spacing: 0.01em;
+}
+
+.btn-collected:hover,
+.btn-collected:focus {
+  background: linear-gradient(135deg, #97ceac, #73b38a);
+  color: #fff;
 }
 
 .notify-client-btn {
