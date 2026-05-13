@@ -652,7 +652,18 @@ function applyBootstrap(bootstrap) {
   if ((bootstrap.masters || []).length === 1) {
     masterSelect.value = bootstrap.masters[0].value;
   }
-  const canSeeSettings = bootstrap.user?.is_superuser || bootstrap.user?.is_staff;
+  const user = bootstrap.user || {};
+  const canShop    = user.is_superuser || user.is_staff;
+  const canOp      = hasPermission("records.add_collector") || hasPermission("records.delete_collector");
+  const canAdmin   = hasPermission("auth.change_user");
+  const canBuh     = Boolean(user.is_superuser);
+  const canAudit   = hasPermission("records.view_auditlog");
+  document.querySelector("#sd-shop")?.classList.toggle("is-hidden", !canShop);
+  document.querySelector("#sd-operator")?.classList.toggle("is-hidden", !canOp);
+  document.querySelector("#sd-admin")?.classList.toggle("is-hidden", !canAdmin);
+  document.querySelector("#sd-timesheet")?.classList.toggle("is-hidden", !canBuh);
+  document.querySelector("#sd-audit")?.classList.toggle("is-hidden", !canAudit);
+  const canSeeSettings = canShop || canOp || canAdmin || canBuh || canAudit;
   settingsWrapper.classList.toggle("is-hidden", !canSeeSettings);
 }
 
