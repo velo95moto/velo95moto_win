@@ -2874,6 +2874,35 @@ fn api_error_message(status: u16, response: ureq::Response) -> String {
     }
 }
 
+#[tauri::command]
+async fn check_for_update(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    use tauri_plugin_updater::UpdaterExt;
+    let updater = app.updater().map_err(|e| e.to_string())?;
+    match updater.check().await {
+        Ok(Some(update)) => Ok(serde_json::json!({
+            "available": true,
+            "version": update.version,
+            "notes": update.body.unwrap_or_default(),
+        })),
+        Ok(None) => Ok(serde_json::json!({ "available": false })),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+#[tauri::command]
+async fn apply_update(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri_plugin_updater::UpdaterExt;
+    let updater = app.updater().map_err(|e| e.to_string())?;
+    if let Some(update) = updater.check().await.map_err(|e| e.to_string())? {
+        update
+            .download_and_install(|_, _| {}, || {})
+            .await
+            .map_err(|e| e.to_string())?;
+        app.restart();
+    }
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -2913,6 +2942,8 @@ pub fn run() {
             save_credentials_to_keychain,
             authenticate_and_get_password,
             delete_credentials_from_keychain,
+            check_for_update,
+            apply_update,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -2634,6 +2634,43 @@ const SyncService = (() => {
   };
 })();
 
+async function checkForUpdate() {
+  try {
+    const result = await invoke("check_for_update");
+    if (!result?.available) return;
+    showUpdateBanner(result.version, result.notes);
+  } catch (e) {
+    console.info("[updater] check skipped:", e);
+  }
+}
+
+function showUpdateBanner(version, notes) {
+  const existing = document.getElementById("update-banner");
+  if (existing) existing.remove();
+  const banner = document.createElement("div");
+  banner.id = "update-banner";
+  banner.className = "update-banner";
+  banner.innerHTML = `
+    <span class="update-banner__text">
+      Доступна новая версия <strong>v${escapeHtml(version)}</strong>
+    </span>
+    <button class="update-banner__btn" id="update-apply-btn" type="button">Обновить сейчас</button>
+    <button class="update-banner__close" id="update-dismiss-btn" type="button" aria-label="Закрыть">×</button>
+  `;
+  document.body.append(banner);
+  document.getElementById("update-apply-btn").addEventListener("click", async () => {
+    const btn = document.getElementById("update-apply-btn");
+    if (btn) { btn.disabled = true; btn.textContent = "Загружаю..."; }
+    try {
+      await invoke("apply_update");
+    } catch (e) {
+      showToast(`Ошибка обновления: ${e}`);
+      if (btn) { btn.disabled = false; btn.textContent = "Обновить сейчас"; }
+    }
+  });
+  document.getElementById("update-dismiss-btn").addEventListener("click", () => banner.remove());
+}
+
 async function pullFromSite(reason = "Обновляю данные с сайта...") {
   const settings = currentSettings();
   if (!hasSyncCredentials(settings)) {
@@ -2797,6 +2834,7 @@ async function login(event) {
     SyncService.start();
     scheduleReconnectWorker(30000);
     maybePromptTouchId();
+    checkForUpdate();
     return;
   }
 
@@ -2822,6 +2860,7 @@ async function login(event) {
     SyncService.start();
     scheduleReconnectWorker(120000);
     maybePromptTouchId();
+    checkForUpdate();
   } catch (error) {
     console.error(error);
     loginStatus.textContent = `Неверный логин или пароль. Локальная база не открыта.`;
