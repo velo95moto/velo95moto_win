@@ -1171,10 +1171,10 @@ async function saveEditedRecord(event) {
 async function loadRecords() {
   const rows = await invoke("list_records");
   state.records = rows;
-  if (!state.datesInitialized && rows.length) {
-    const lastDate = rows.map((record) => record.record_date).sort().at(-1);
-    startDateFilter.value = lastDate;
-    endDateFilter.value = lastDate;
+  if (!state.datesInitialized) {
+    const today = todayIsoDate();
+    startDateFilter.value = today;
+    endDateFilter.value = today;
     state.datesInitialized = true;
   }
   state.pendingRecords = rows.filter((record) => record.sync_status !== "synced").length;
@@ -2484,6 +2484,7 @@ async function saveRecord(event) {
     updateRecordTotal();
     updateRecordSubmitState();
     await loadRecords();
+    switchView("records");
     setStatus(`Запись L-${localId} сохранена локально. Синхронизация пойдёт в фоне.`);
     queueBackgroundSync("record-save", `Запись L-${localId} синхронизирована с сайтом.`);
   } catch (error) {
