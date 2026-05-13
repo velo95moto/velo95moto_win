@@ -12,11 +12,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - platform: windows-latest
-            target: x86_64-pc-windows-msvc
-          - platform: macos-latest
-            target: aarch64-apple-darwin
+        platform: [windows-latest, macos-latest]
 
     runs-on: ${{ matrix.platform }}
 
@@ -26,8 +22,6 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
 
       - name: Install Node.js
         uses: actions/setup-node@v4
@@ -49,5 +43,4 @@ jobs:
           releaseBody: 'Новая версия приложения Velo95Moto'
           releaseDraft: false
           prerelease: false
-          updaterJsonKeepUniversal: true   # ← добавь эту строку
-          args: --target ${{ matrix.target }}
+          updaterJsonKeepUniversal: true
