@@ -2,7 +2,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   LONG_UNSYNCED_MS,
+  nextReconnectDelayMs,
+  OFFLINE_RETRY_DELAYS_MS,
+  ONLINE_RETRY_DELAY_MS,
   getSyncStatusMessage,
+  shouldAttemptBackgroundSync,
   shouldAutoSyncAfterReconnect,
   shouldShowLongSyncWarning,
 } from "./sync-status.js";
@@ -84,4 +88,60 @@ test("server or network error shows error without implying pending data is remov
     uiStatus: "error",
     pendingTotal: 1,
   }), "Ошибка синхронизации");
+});
+
+test("server error can show the full sync reason", () => {
+  assert.equal(getSyncStatusMessage({
+    online: true,
+    uiStatus: "error",
+    pendingTotal: 1,
+    uiMessage: "Ошибка синхронизации: Сборка 2026-05-13 на 200 ₽ для Дадаев Ислам не отправлена: duplicate daily total",
+  }), "Ошибка синхронизации: Сборка 2026-05-13 на 200 ₽ для Дадаев Ислам не отправлена: duplicate daily total");
+});
+
+test("offline reconnect retry uses capped backoff", () => {
+  assert.deepEqual(OFFLINE_RETRY_DELAYS_MS, [5_000, 15_000, 30_000, 60_000]);
+  assert.equal(nextReconnectDelayMs({ online: false, attempts: 0 }), 5_000);
+  assert.equal(nextReconnectDelayMs({ online: false, attempts: 1 }), 15_000);
+  assert.equal(nextReconnectDelayMs({ online: false, attempts: 2 }), 30_000);
+  assert.equal(nextReconnectDelayMs({ online: false, attempts: 3 }), 60_000);
+  assert.equal(nextReconnectDelayMs({ online: false, attempts: 99 }), 60_000);
+});
+
+test("online reconnect retry is infrequent", () => {
+  assert.equal(ONLINE_RETRY_DELAY_MS, 120_000);
+  assert.equal(nextReconnectDelayMs({ online: true, attempts: 99 }), ONLINE_RETRY_DELAY_MS);
+});
+
+test("background sync does not start while offline", () => {
+  assert.equal(shouldAttemptBackgroundSync({
+    online: false,
+    syncInProgress: false,
+    pendingTotal: 3,
+  }), false);
+});
+
+test("manual forced sync may perform one offline health check", () => {
+  assert.equal(shouldAttemptBackgroundSync({
+    online: false,
+    syncInProgress: false,
+    pendingTotal: 3,
+    force: true,
+  }), true);
+});
+
+test("only one sync job can run at a time", () => {
+  assert.equal(shouldAttemptBackgroundSync({
+    online: true,
+    syncInProgress: true,
+    pendingTotal: 3,
+  }), false);
+});
+
+test("background sync waits when there are no local changes", () => {
+  assert.equal(shouldAttemptBackgroundSync({
+    online: true,
+    syncInProgress: false,
+    pendingTotal: 0,
+  }), false);
 });

@@ -1,6 +1,8 @@
 import {
   getSyncStatusMessage,
+  nextReconnectDelayMs,
   parseSyncDate,
+  shouldAttemptBackgroundSync,
   shouldShowLongSyncWarning,
   shouldAutoSyncAfterReconnect,
 } from "./sync-status.js";
@@ -351,23 +353,41 @@ async function runHealthCheck(source = "startup") {
   }
 }
 
-function scheduleReconnectWorker(delayMs = state.network.online ? 120000 : 30000) {
+function scheduleReconnectWorker(delayMs = nextReconnectDelayMs({
+  online: state.network.online,
+  attempts: state.network.reconnectAttempts,
+})) {
   window.clearTimeout(state.network.reconnectTimer);
   state.network.reconnectTimer = window.setTimeout(async () => {
     state.network.reconnectAttempts += 1;
     console.info(`[offline-startup] reconnect attempt=${state.network.reconnectAttempts}`);
     const wasOnline = state.network.online;
     const isOnline = await runHealthCheck("reconnect");
+    if (isOnline) state.network.reconnectAttempts = 0;
     await refreshPendingSyncSummary();
     if (shouldAutoSyncAfterReconnect({ wasOnline, isOnline, pendingTotal: state.pendingTotal })) {
       queueBackgroundSync("reconnect", "Данные синхронизированы после восстановления связи.");
     }
-    scheduleReconnectWorker(isOnline ? 120000 : 30000);
+    scheduleReconnectWorker(nextReconnectDelayMs({
+      online: isOnline,
+      attempts: state.network.reconnectAttempts,
+    }));
   }, delayMs);
 }
 
 function queueBackgroundSync(reason = "background", successMessage = "Данные синхронизированы с сайтом.") {
   window.setTimeout(() => {
+    if (!shouldAttemptBackgroundSync({
+      online: state.network.online,
+      syncInProgress: state.network.syncInProgress,
+      pendingTotal: state.pendingTotal,
+    })) {
+      if (!state.network.online) {
+        setSyncUiStatus("offline", "Нет интернета");
+        scheduleReconnectWorker();
+      }
+      return;
+    }
     syncNow(successMessage, { reason, background: true });
   }, 0);
 }
@@ -2623,7 +2643,16 @@ async function syncNow(successMessage = "Действие синхронизир
     return false;
   }
 
+  state.network.syncInProgress = true;
+  updateSyncButton();
   try {
+    if (options.background && !state.network.online && !options.forceHealth) {
+      setSyncUiStatus("offline", "Нет интернета");
+      console.info(`[offline-startup] background sync skipped reason=${options.reason || "background"} mode=offline`);
+      scheduleReconnectWorker();
+      return false;
+    }
+
     setSyncUiStatus("syncing", "Синхронизация...");
     if (!state.network.online || options.forceHealth) {
       const online = await runHealthCheck(options.reason || "sync");
@@ -2636,7 +2665,6 @@ async function syncNow(successMessage = "Действие синхронизир
       }
     }
 
-    state.network.syncInProgress = true;
     console.info(`[offline-startup] sync started reason=${options.reason || "background"}`);
     const message = await invoke("sync_records", { settings });
     await invoke("pull_records", { settings });
@@ -2650,11 +2678,10 @@ async function syncNow(successMessage = "Действие синхронизир
     return true;
   } catch (error) {
     console.error(error);
-    state.network.online = false;
-    state.network.mode = "offline";
-    setSyncUiStatus("error", "Ошибка синхронизации");
+    const errorMessage = `Ошибка синхронизации: ${String(error)}`;
+    setSyncUiStatus("error", errorMessage);
     console.warn(`[offline-startup] sync error reason=${options.reason || "background"}`, error);
-    if (!options.background) setStatus(`Ошибка синхронизации: ${error}`, true);
+    if (!options.background) setStatus(errorMessage, true);
     await refreshAll();
     return false;
   } finally {
@@ -2717,6 +2744,21 @@ const SyncService = (() => {
 
   async function _run() {
     if (state.network.syncInProgress) return;
+    if (!state.network.online) {
+      _offline = true;
+      _renderIndicator();
+      scheduleReconnectWorker();
+      return;
+    }
+    await refreshPendingSyncSummary();
+    if (!shouldAttemptBackgroundSync({
+      online: state.network.online,
+      syncInProgress: state.network.syncInProgress,
+      pendingTotal: state.pendingTotal,
+    })) {
+      _renderIndicator();
+      return;
+    }
     _renderIndicator();
     try {
       const ok = await syncNow("", { reason: "auto", background: true });
@@ -3044,10 +3086,10 @@ async function startOfflineFirstStartup() {
     console.info(`[offline-startup] startup mode=${online ? "online" : "offline"}`);
     if (!online) {
       loginStatus.textContent = "Офлайн-режим. Введите пароль, чтобы открыть локальную базу.";
-      scheduleReconnectWorker(30000);
+      scheduleReconnectWorker(nextReconnectDelayMs({ online: false, attempts: 0 }));
     } else {
       loginStatus.textContent = "Сервер доступен. Введите пароль, чтобы открыть программу.";
-      scheduleReconnectWorker(120000);
+      scheduleReconnectWorker(nextReconnectDelayMs({ online: true }));
     }
   });
 }
@@ -3076,7 +3118,7 @@ async function login(event) {
     syncPanel.classList.add("is-hidden");
     setStatus("Локальная база открыта. Синхронизация пойдёт в фоне.");
     SyncService.start();
-    scheduleReconnectWorker(30000);
+    scheduleReconnectWorker(nextReconnectDelayMs({ online: state.network.online, attempts: 0 }));
     maybePromptTouchId();
     checkForUpdate();
     if (state.bootstrap?.roles?.is_operator_role) AssemblyOrderPoller.start();
@@ -3090,7 +3132,7 @@ async function login(event) {
   if (!online) {
     loginStatus.textContent = "Нет связи с сервером, и этот пароль не подтверждён локально. Локальная база не открыта.";
     setStatus("Вход не выполнен.");
-    scheduleReconnectWorker(30000);
+    scheduleReconnectWorker(nextReconnectDelayMs({ online: false, attempts: 0 }));
     return;
   }
 
@@ -3103,7 +3145,7 @@ async function login(event) {
     syncPanel.classList.add("is-hidden");
     setStatus("Вход выполнен. Локальная база открыта, синхронизация пойдёт в фоне.");
     SyncService.start();
-    scheduleReconnectWorker(120000);
+    scheduleReconnectWorker(nextReconnectDelayMs({ online: true }));
     maybePromptTouchId();
     checkForUpdate();
     if (state.bootstrap?.roles?.is_operator_role) AssemblyOrderPoller.start();

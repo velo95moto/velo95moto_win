@@ -823,7 +823,8 @@ fn notify_record_client(
 
 #[tauri::command]
 fn verify_operator_password(settings: SyncSettings, password: String) -> Result<bool, String> {
-    let token = fetch_token(&settings)?;
+    let agent = pull_agent();
+    let token = fetch_token_with_agent(&agent, &settings)?;
     let url = format!(
         "{}/mobile/auth/verify-operator-password/",
         settings.server_url.trim_end_matches('/')
@@ -1350,7 +1351,7 @@ fn fetch_token_with_agent(agent: &ureq::Agent, settings: &SyncSettings) -> Resul
 }
 
 fn fetch_token(settings: &SyncSettings) -> Result<String, String> {
-    let agent = ureq::AgentBuilder::new().build();
+    let agent = pull_agent();
     fetch_token_with_agent(&agent, settings)
 }
 
@@ -1361,12 +1362,17 @@ fn pull_agent() -> ureq::Agent {
         .build()
 }
 
-fn fetch_bootstrap(settings: &SyncSettings, token: &str) -> Result<serde_json::Value, String> {
+fn fetch_bootstrap_with_agent(
+    agent: &ureq::Agent,
+    settings: &SyncSettings,
+    token: &str,
+) -> Result<serde_json::Value, String> {
     let url = format!(
         "{}/mobile/bootstrap/",
         settings.server_url.trim_end_matches('/')
     );
-    ureq::get(&url)
+    agent
+        .get(&url)
         .set("Authorization", &format!("Bearer {token}"))
         .call()
         .map_err(|error| error.to_string())?
@@ -1428,8 +1434,9 @@ fn health_check(server_url: String, timeout_ms: Option<u64>) -> Result<serde_jso
 
 #[tauri::command]
 fn login_and_bootstrap(settings: SyncSettings) -> Result<serde_json::Value, String> {
-    let token = fetch_token(&settings)?;
-    let mut bootstrap = fetch_bootstrap(&settings, &token)?;
+    let agent = pull_agent();
+    let token = fetch_token_with_agent(&agent, &settings)?;
+    let mut bootstrap = fetch_bootstrap_with_agent(&agent, &settings, &token)?;
     bootstrap["access_token"] = json!(token);
     Ok(bootstrap)
 }
@@ -2382,11 +2389,12 @@ fn sync_records(app: tauri::AppHandle, settings: SyncSettings) -> Result<String,
         return Ok("Нет данных для синхронизации.".to_string());
     }
 
-    let token = fetch_token(&settings)?;
-    let mut synced_count = 0;
-    let mut conflicts_count = 0;
-    let mut errors_count = 0;
-    let mut already_collected_count = 0;
+    let agent = pull_agent();
+    let token = fetch_token_with_agent(&agent, &settings)?;
+    let mut synced_count: usize = 0;
+    let mut conflicts_count: usize = 0;
+    let mut errors_count: usize = 0;
+    let mut already_collected_count: usize = 0;
 
     if !pending.is_empty() {
         let payload_records: Vec<_> = pending
@@ -2419,7 +2427,8 @@ fn sync_records(app: tauri::AppHandle, settings: SyncSettings) -> Result<String,
             "{}/mobile/sync/records/",
             settings.server_url.trim_end_matches('/')
         );
-        let response: serde_json::Value = ureq::post(&sync_url)
+        let response: serde_json::Value = agent
+            .post(&sync_url)
             .set("Authorization", &format!("Bearer {token}"))
             .send_json(json!({ "records": payload_records }))
             .map_err(|error| error.to_string())?
@@ -2511,23 +2520,68 @@ fn sync_records(app: tauri::AppHandle, settings: SyncSettings) -> Result<String,
     }
 
     let mut synced_assemblies = 0;
+    let mut assembly_errors: Vec<String> = Vec::new();
     let assembly_url = format!(
         "{}/mobile/assembly/",
         settings.server_url.trim_end_matches('/')
     );
     for assembly in pending_assembly_rows {
-        let response: serde_json::Value = ureq::post(&assembly_url)
+        let payload = json!({
+            "sync_uuid": assembly.sync_uuid,
+            "date": assembly.entry_date,
+            "collector_name": assembly.collector_name,
+            "amount": assembly.amount,
+            "assembly_count": assembly.assembly_count,
+        });
+        let response_result = agent
+            .post(&assembly_url)
             .set("Authorization", &format!("Bearer {token}"))
-            .send_json(json!({
-                "sync_uuid": assembly.sync_uuid,
-                "date": assembly.entry_date,
-                "collector_name": assembly.collector_name,
-                "amount": assembly.amount,
-                "assembly_count": assembly.assembly_count,
-            }))
-            .map_err(|error| error.to_string())?
-            .into_json()
-            .map_err(|error| error.to_string())?;
+            .send_json(payload);
+        let response: serde_json::Value = match response_result {
+            Ok(response) => match response.into_json() {
+                Ok(value) => value,
+                Err(error) => {
+                    let message = format!("Сайт вернул нечитаемый ответ по сборке: {error}");
+                    conn.execute(
+                        "UPDATE assemblies SET sync_status = 'error', last_error = ?1 WHERE local_id = ?2",
+                        params![message, assembly.local_id],
+                    )
+                    .map_err(|error| error.to_string())?;
+                    assembly_errors.push(message);
+                    errors_count += 1;
+                    continue;
+                }
+            },
+            Err(ureq::Error::Status(code, response)) => {
+                let detail = api_error_message(code, response);
+                let message = format!(
+                    "Сборка {} на {} ₽ для {} не отправлена: {}",
+                    assembly.entry_date, assembly.amount, assembly.collector_name, detail
+                );
+                conn.execute(
+                    "UPDATE assemblies SET sync_status = 'error', last_error = ?1 WHERE local_id = ?2",
+                    params![message, assembly.local_id],
+                )
+                .map_err(|error| error.to_string())?;
+                assembly_errors.push(message);
+                errors_count += 1;
+                continue;
+            }
+            Err(error) => {
+                let message = format!(
+                    "Сборка {} на {} ₽ для {} не отправлена: {}",
+                    assembly.entry_date, assembly.amount, assembly.collector_name, error
+                );
+                conn.execute(
+                    "UPDATE assemblies SET sync_status = 'error', last_error = ?1 WHERE local_id = ?2",
+                    params![message, assembly.local_id],
+                )
+                .map_err(|error| error.to_string())?;
+                assembly_errors.push(message);
+                errors_count += 1;
+                continue;
+            }
+        };
         let server_id = response.get("id").and_then(|value| value.as_i64());
         conn.execute(
             r#"
@@ -2562,7 +2616,8 @@ fn sync_records(app: tauri::AppHandle, settings: SyncSettings) -> Result<String,
                 })
             })
             .collect();
-        let response: Result<serde_json::Value, String> = ureq::post(&advances_url)
+        let response: Result<serde_json::Value, String> = agent
+            .post(&advances_url)
             .set("Authorization", &format!("Bearer {token}"))
             .send_json(json!({ "advances": payload_advances }))
             .map_err(|e| e.to_string())
@@ -2660,7 +2715,8 @@ fn sync_records(app: tauri::AppHandle, settings: SyncSettings) -> Result<String,
                     })
                 })
                 .collect();
-            let response: Result<serde_json::Value, String> = ureq::post(&orders_url)
+            let response: Result<serde_json::Value, String> = agent
+                .post(&orders_url)
                 .set("Authorization", &format!("Bearer {token}"))
                 .send_json(json!({ "orders": payload }))
                 .map_err(|e| e.to_string())
@@ -2722,7 +2778,8 @@ fn sync_records(app: tauri::AppHandle, settings: SyncSettings) -> Result<String,
                 "action": action,
                 "collector_name": order.assigned_collector_name,
             });
-            let resp = ureq::request("PATCH", &orders_url)
+            let resp = agent
+                .request("PATCH", &orders_url)
                 .set("Authorization", &format!("Bearer {token}"))
                 .send_json(payload);
             match resp {
@@ -2752,6 +2809,11 @@ fn sync_records(app: tauri::AppHandle, settings: SyncSettings) -> Result<String,
     }
 
     if conflicts_count > 0 || errors_count > 0 {
+        if let Some(message) = assembly_errors.first() {
+            return Err(format!(
+                "{message}. Синхронизировано записей: {synced_count}, сборок: {synced_assemblies}, авансов: {synced_advances}, заказов: {synced_orders}. Ошибки: {errors_count}."
+            ));
+        }
         return Ok(format!(
             "Синхронизировано записей: {synced_count}, сборок: {synced_assemblies}, авансов: {synced_advances}, заказов: {synced_orders}. Конфликты: {conflicts_count}. Ошибки: {errors_count}."
         ));
@@ -2785,8 +2847,8 @@ fn api_request(
     let auth = format!("Bearer {token}");
 
     let agent = ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_secs(8))
-        .timeout_read(Duration::from_secs(20))
+        .timeout_connect(Duration::from_secs(3))
+        .timeout_read(Duration::from_secs(8))
         .build();
 
     let request_result = match method.to_uppercase().as_str() {

@@ -1,4 +1,6 @@
 export const LONG_UNSYNCED_MS = 30 * 60 * 1000;
+export const OFFLINE_RETRY_DELAYS_MS = [5_000, 15_000, 30_000, 60_000];
+export const ONLINE_RETRY_DELAY_MS = 120_000;
 
 export function parseSyncDate(value) {
   if (!value) return null;
@@ -26,7 +28,7 @@ export function getSyncStatusMessage({
   uiMessage = "",
 } = {}) {
   if (syncInProgress) return "Синхронизация...";
-  if (uiStatus === "error") return "Ошибка синхронизации";
+  if (uiStatus === "error") return uiMessage || "Ошибка синхронизации";
   if (longWarningVisible) return "Давно не синхронизировано";
   if (uiStatus === "offline" || !online) return "Нет интернета";
   if (Number(pendingTotal || 0) > 0) return "Есть локальные изменения";
@@ -36,4 +38,21 @@ export function getSyncStatusMessage({
 
 export function shouldAutoSyncAfterReconnect({ wasOnline = false, isOnline = false, pendingTotal = 0 } = {}) {
   return Boolean(isOnline && !wasOnline && Number(pendingTotal || 0) > 0);
+}
+
+export function nextReconnectDelayMs({ online = false, attempts = 0 } = {}) {
+  if (online) return ONLINE_RETRY_DELAY_MS;
+  const index = Math.max(0, Math.min(Number(attempts || 0), OFFLINE_RETRY_DELAYS_MS.length - 1));
+  return OFFLINE_RETRY_DELAYS_MS[index];
+}
+
+export function shouldAttemptBackgroundSync({
+  online = false,
+  syncInProgress = false,
+  pendingTotal = 0,
+  force = false,
+} = {}) {
+  if (syncInProgress) return false;
+  if (!online && !force) return false;
+  return force || Number(pendingTotal || 0) > 0;
 }
