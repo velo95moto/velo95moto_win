@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Velo95Moto",
-  "version": "0.1.18",
+  "version": "0.1.19",
   "identifier": "com.velo95moto.desktop",
   "build": {
     "frontendDist": "../src"
@@ -36,7 +36,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "RWRSceJkfhEpxYenq/bV8hVU/rJDxDJUM2X5AxQBtv9HPInMkPnGGrcJ",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDNBRUVCOUU1Rjk2REVBNjgKUldSbzZtMzU1Ym51T2pSM3JYZTlLTWpRMEduY1J1RFN3TVZiK1pCUG0rYlR6U2JaOG9vZnUzMm4K",
       "endpoints": [
         "https://github.com/velo95moto/velo95moto_win/releases/latest/download/latest.json"
       ],
