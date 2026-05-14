@@ -1,8 +1,11 @@
 import {
   getSyncStatusMessage,
   nextReconnectDelayMs,
+  offlineSyncMessage,
   parseSyncDate,
   shouldAttemptBackgroundSync,
+  shouldFastFailManualSync,
+  shouldAutoSyncWhenOnline,
   shouldShowLongSyncWarning,
   shouldAutoSyncAfterReconnect,
 } from "./sync-status.js";
@@ -322,7 +325,11 @@ function showLocalUi() {
   appShell.classList.remove("is-locked");
 }
 
-async function runHealthCheck(source = "startup") {
+function browserIsOnline() {
+  return typeof navigator === "undefined" || navigator.onLine !== false;
+}
+
+async function runHealthCheck(source = "startup", timeoutMs = 1500) {
   const settings = currentSettings();
   if (!settings.server_url) {
     state.network.online = false;
@@ -335,7 +342,7 @@ async function runHealthCheck(source = "startup") {
   try {
     const result = await invoke("health_check", {
       serverUrl: settings.server_url,
-      timeoutMs: 1500,
+      timeoutMs,
     });
     state.network.lastHealth = result;
     state.network.online = Boolean(result.online);
@@ -365,7 +372,14 @@ function scheduleReconnectWorker(delayMs = nextReconnectDelayMs({
     const isOnline = await runHealthCheck("reconnect");
     if (isOnline) state.network.reconnectAttempts = 0;
     await refreshPendingSyncSummary();
-    if (shouldAutoSyncAfterReconnect({ wasOnline, isOnline, pendingTotal: state.pendingTotal })) {
+    if (
+      shouldAutoSyncAfterReconnect({ wasOnline, isOnline, pendingTotal: state.pendingTotal })
+      || shouldAutoSyncWhenOnline({
+        isOnline,
+        pendingTotal: state.pendingTotal,
+        syncInProgress: state.network.syncInProgress,
+      })
+    ) {
       queueBackgroundSync("reconnect", "Данные синхронизированы после восстановления связи.");
     }
     scheduleReconnectWorker(nextReconnectDelayMs({
@@ -390,6 +404,18 @@ function queueBackgroundSync(reason = "background", successMessage = "Данны
     }
     syncNow(successMessage, { reason, background: true });
   }, 0);
+}
+
+async function handleConfirmedOnline(source = "online") {
+  await refreshPendingSyncSummary();
+  SyncService.markOnlineDetected();
+  if (shouldAutoSyncWhenOnline({
+    isOnline: state.network.online,
+    pendingTotal: state.pendingTotal,
+    syncInProgress: state.network.syncInProgress,
+  })) {
+    queueBackgroundSync(source, "Данные синхронизированы после восстановления связи.");
+  }
 }
 
 const ADMIN_VIEWS = new Set(["timesheet", "audit", "operator", "users", "shop"]);
@@ -2455,33 +2481,98 @@ function renderSalaryData(data) {
   `;
 }
 
+function salaryCacheKey(dateValue) {
+  return `salaryCache:${dateValue || todayIsoDate()}`;
+}
+
+function readSalaryCache(dateValue) {
+  const memoryCache = state.salaryCache;
+  if (memoryCache && memoryCache.date === dateValue) return memoryCache;
+  try {
+    const raw = localStorage.getItem(salaryCacheKey(dateValue));
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeSalaryCache(data) {
+  if (!data?.date) return;
+  state.salaryCache = data;
+  try {
+    localStorage.setItem(salaryCacheKey(data.date), JSON.stringify(data));
+  } catch (error) {
+    console.info("[salary] persistent cache skipped", error);
+  }
+}
+
+async function loadLocalSalaryFallback(dateValue) {
+  const cached = readSalaryCache(dateValue);
+  if (cached) return { data: cached, source: "cache" };
+  const data = await invoke("local_salary_report", { date: dateValue });
+  return { data, source: "sqlite" };
+}
+
 async function loadSalaryView() {
   if (!salaryContent) return;
   if (!salaryDateInput.value) salaryDateInput.value = todayIsoDate();
   const dateValue = salaryDateInput.value;
-  const cache = state.salaryCache;
-  if (cache && cache.date === dateValue) {
+  const cache = readSalaryCache(dateValue);
+  if (cache) {
     renderSalaryData(cache);
+    if (!state.network.online || !browserIsOnline()) {
+      setAdminStatus(salaryStatus, "Показаны последние сохранённые данные (офлайн).");
+      return;
+    }
     const t0Salary = performance.now();
     apiRequest("GET", `mobile/salary/?date=${encodeURIComponent(dateValue)}`).then((data) => {
       console.debug(`[salary] background refresh for ${dateValue} in ${Math.round(performance.now() - t0Salary)}ms`);
-      state.salaryCache = data;
+      writeSalaryCache(data);
       renderSalaryData(data);
       setAdminStatus(salaryStatus, "");
     }).catch(() => {});
     return;
   }
+
+  if (!state.network.online || !browserIsOnline()) {
+    try {
+      const { data, source } = await loadLocalSalaryFallback(dateValue);
+      renderSalaryData(data);
+      setAdminStatus(
+        salaryStatus,
+        source === "cache"
+          ? "Показаны последние сохранённые данные (офлайн)."
+          : "Показаны данные из локальной базы (офлайн).",
+      );
+    } catch (error) {
+      console.error(error);
+      setAdminStatus(salaryStatus, "Нет сохранённых данных зарплаты для офлайн-просмотра.", true);
+    }
+    return;
+  }
+
   setAdminStatus(salaryStatus, "Загружаю...");
   const t0Salary = performance.now();
   try {
     const data = await apiRequest("GET", `mobile/salary/?date=${encodeURIComponent(dateValue)}`);
     console.debug(`[salary] loaded for ${dateValue} in ${Math.round(performance.now() - t0Salary)}ms`);
-    state.salaryCache = data;
+    writeSalaryCache(data);
     renderSalaryData(data);
     setAdminStatus(salaryStatus, "");
   } catch (error) {
     console.error(error);
-    setAdminStatus(salaryStatus, `Ошибка: ${error}`, true);
+    try {
+      const { data, source } = await loadLocalSalaryFallback(dateValue);
+      renderSalaryData(data);
+      setAdminStatus(
+        salaryStatus,
+        source === "cache"
+          ? "Сервер недоступен. Показаны последние сохранённые данные."
+          : "Сервер недоступен. Показаны данные из локальной базы.",
+      );
+    } catch {
+      setAdminStatus(salaryStatus, `Ошибка: ${error}`, true);
+    }
   }
 }
 
@@ -2621,9 +2712,34 @@ async function syncPendingRecords() {
     setStatus("Введите логин и пароль от сайта.");
     return;
   }
+  if (shouldFastFailManualSync({
+    browserOnline: browserIsOnline(),
+    syncInProgress: state.network.syncInProgress,
+  })) {
+    state.network.online = false;
+    state.network.mode = "offline";
+    const message = offlineSyncMessage();
+    setSyncUiStatus("offline", "Нет интернета");
+    setStatus(message, true);
+    scheduleReconnectWorker();
+    return;
+  }
+  if (state.network.syncInProgress) {
+    setStatus("Синхронизация уже выполняется.");
+    return;
+  }
 
   try {
-    await syncNow("Данные синхронизированы с сайтом.", { reason: "manual", forceHealth: true });
+    setSyncUiStatus("syncing", "Проверяю интернет...");
+    const online = await runHealthCheck("manual-preflight", 700);
+    if (!online) {
+      const message = offlineSyncMessage();
+      setSyncUiStatus("offline", "Нет интернета");
+      setStatus(message, true);
+      scheduleReconnectWorker();
+      return;
+    }
+    await syncNow("Данные синхронизированы с сайтом.", { reason: "manual", forceHealth: false });
   } catch (error) {
     console.error(error);
     setStatus(`Ошибка синхронизации: ${error}`);
@@ -2670,8 +2786,11 @@ async function syncNow(successMessage = "Действие синхронизир
     await invoke("pull_records", { settings });
     await invoke("pull_all_today", { settings });
     state.lastSuccessfulSyncAt = await invoke("mark_sync_success");
+    state.network.online = true;
+    state.network.mode = "online";
     setSyncUiStatus("ok", "Синхронизировано");
     await refreshAll();
+    SyncService.markOnlineSuccess(state.lastSuccessfulSyncAt);
     if (successMessage && !options.background) setStatus(successMessage);
     else if (message.includes("уже отметили")) setStatus(message);
     console.info(`[offline-startup] sync success reason=${options.reason || "background"}`);
@@ -2788,6 +2907,17 @@ const SyncService = (() => {
     stop() {
       clearInterval(_timer);
       _timer = null;
+    },
+    markOnlineSuccess(marker = null) {
+      _lastSyncAt = marker ? parseSyncDate(marker) || new Date() : new Date();
+      _error = null;
+      _offline = false;
+      _renderIndicator();
+    },
+    markOnlineDetected() {
+      _error = null;
+      _offline = false;
+      _renderIndicator();
     },
     runNow: _run,
     renderIndicator: _renderIndicator,
@@ -3537,12 +3667,12 @@ window.addEventListener("DOMContentLoaded", async () => {
     state.network.mode = "offline";
     setSyncUiStatus("offline", "Нет интернета");
     setStatus("Нет интернета.");
+    scheduleReconnectWorker(nextReconnectDelayMs({ online: false, attempts: 0 }));
   });
   window.addEventListener("online", async () => {
     const online = await runHealthCheck("browser-online");
     if (online) {
-      await refreshPendingSyncSummary();
-      if (hasPendingLocalChanges()) queueBackgroundSync("browser-online", "Данные синхронизированы после восстановления связи.");
+      await handleConfirmedOnline("browser-online");
     }
   });
   updateRecordTotal();

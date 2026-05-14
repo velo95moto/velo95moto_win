@@ -40,6 +40,14 @@ export function shouldAutoSyncAfterReconnect({ wasOnline = false, isOnline = fal
   return Boolean(isOnline && !wasOnline && Number(pendingTotal || 0) > 0);
 }
 
+export function shouldAutoSyncWhenOnline({
+  isOnline = false,
+  pendingTotal = 0,
+  syncInProgress = false,
+} = {}) {
+  return Boolean(isOnline && !syncInProgress && Number(pendingTotal || 0) > 0);
+}
+
 export function nextReconnectDelayMs({ online = false, attempts = 0 } = {}) {
   if (online) return ONLINE_RETRY_DELAY_MS;
   const index = Math.max(0, Math.min(Number(attempts || 0), OFFLINE_RETRY_DELAYS_MS.length - 1));
@@ -55,4 +63,16 @@ export function shouldAttemptBackgroundSync({
   if (syncInProgress) return false;
   if (!online && !force) return false;
   return force || Number(pendingTotal || 0) > 0;
+}
+
+export function shouldFastFailManualSync({
+  browserOnline = true,
+  syncInProgress = false,
+} = {}) {
+  if (syncInProgress) return false;
+  return browserOnline === false;
+}
+
+export function offlineSyncMessage() {
+  return "Нет подключения к интернету. Синхронизация невозможна.";
 }

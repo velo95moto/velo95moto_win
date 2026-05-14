@@ -6,8 +6,11 @@ import {
   OFFLINE_RETRY_DELAYS_MS,
   ONLINE_RETRY_DELAY_MS,
   getSyncStatusMessage,
+  offlineSyncMessage,
   shouldAttemptBackgroundSync,
   shouldAutoSyncAfterReconnect,
+  shouldAutoSyncWhenOnline,
+  shouldFastFailManualSync,
   shouldShowLongSyncWarning,
 } from "./sync-status.js";
 
@@ -35,6 +38,30 @@ test("auto sync starts after internet is restored when local changes exist", () 
     isOnline: true,
     pendingTotal: 1,
   }), true);
+});
+
+test("auto sync starts when online is confirmed even if previous state was stale", () => {
+  assert.equal(shouldAutoSyncWhenOnline({
+    isOnline: true,
+    pendingTotal: 1,
+    syncInProgress: false,
+  }), true);
+});
+
+test("auto sync after confirmed online does not start without local changes", () => {
+  assert.equal(shouldAutoSyncWhenOnline({
+    isOnline: true,
+    pendingTotal: 0,
+    syncInProgress: false,
+  }), false);
+});
+
+test("auto sync after confirmed online does not start during active sync", () => {
+  assert.equal(shouldAutoSyncWhenOnline({
+    isOnline: true,
+    pendingTotal: 1,
+    syncInProgress: true,
+  }), false);
 });
 
 test("auto sync does not start after reconnect when there are no local changes", () => {
@@ -144,4 +171,45 @@ test("background sync waits when there are no local changes", () => {
     syncInProgress: false,
     pendingTotal: 0,
   }), false);
+});
+
+test("sync button without internet fails fast before network requests", () => {
+  assert.equal(shouldFastFailManualSync({
+    browserOnline: false,
+    syncInProgress: false,
+  }), true);
+  assert.equal(offlineSyncMessage(), "Нет подключения к интернету. Синхронизация невозможна.");
+});
+
+test("sync button does not start another job while sync is running", () => {
+  assert.equal(shouldFastFailManualSync({
+    browserOnline: false,
+    syncInProgress: true,
+  }), false);
+});
+
+test("manual sync may do a short health check when browser thinks it is online", () => {
+  assert.equal(shouldFastFailManualSync({
+    browserOnline: true,
+    syncInProgress: false,
+  }), false);
+});
+
+test("successful sync status can show online green state with last sync time", () => {
+  const lastSuccessfulSyncAt = new Date(now).toISOString();
+  assert.equal(getSyncStatusMessage({
+    online: true,
+    uiStatus: "ok",
+    pendingTotal: 0,
+    lastSuccessfulSyncAt,
+  }), "Синхронизировано");
+});
+
+test("reconnect clears offline status when sync state is ok", () => {
+  assert.equal(getSyncStatusMessage({
+    online: true,
+    uiStatus: "ok",
+    pendingTotal: 0,
+    lastSuccessfulSyncAt: new Date(now).toISOString(),
+  }), "Синхронизировано");
 });

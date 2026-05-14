@@ -987,6 +987,113 @@ fn list_assemblies(app: tauri::AppHandle) -> Result<Vec<LocalAssembly>, String> 
 }
 
 #[tauri::command]
+fn local_salary_report(app: tauri::AppHandle, date: String) -> Result<serde_json::Value, String> {
+    let conn = open_database(&app)?;
+    let selected_date = date.trim();
+    let report_date = if selected_date.is_empty() {
+        chrono_like_today()
+    } else {
+        selected_date.to_string()
+    };
+
+    let mut records_stmt = conn
+        .prepare(
+            r#"
+            SELECT local_id, server_id, record_date, title, phone, master,
+                   total_amount, mast_50_5, collected, collected_date
+            FROM records
+            WHERE collected = 1 AND collected_date = ?1
+            ORDER BY record_date DESC, COALESCE(server_id, local_id) DESC
+            "#,
+        )
+        .map_err(|error| error.to_string())?;
+    let records = records_stmt
+        .query_map(params![report_date], |row| {
+            let local_id: i64 = row.get(0)?;
+            let server_id: Option<i64> = row.get(1)?;
+            Ok(json!({
+                "local_id": local_id,
+                "server_id": server_id,
+                "record_date": row.get::<_, String>(2)?,
+                "title": row.get::<_, String>(3)?,
+                "phone": row.get::<_, String>(4)?,
+                "master": row.get::<_, String>(5)?,
+                "total_amount": row.get::<_, i64>(6)?,
+                "master_amount": row.get::<_, i64>(7)?,
+                "collected": row.get::<_, i64>(8)? != 0,
+                "collected_date": row.get::<_, String>(9)?,
+            }))
+        })
+        .map_err(|error| error.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+
+    let mut masters_stmt = conn
+        .prepare(
+            r#"
+            SELECT master, SUM(mast_50_5) AS earned
+            FROM records
+            WHERE collected = 1 AND collected_date = ?1
+            GROUP BY master
+            HAVING master <> ''
+            ORDER BY earned DESC
+            "#,
+        )
+        .map_err(|error| error.to_string())?;
+    let masters = masters_stmt
+        .query_map(params![report_date], |row| {
+            Ok(json!({
+                "name": row.get::<_, String>(0)?,
+                "earned": row.get::<_, i64>(1)?,
+            }))
+        })
+        .map_err(|error| error.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+
+    let mut assemblers_stmt = conn
+        .prepare(
+            r#"
+            SELECT collector_name, SUM(amount) AS earned
+            FROM assemblies
+            WHERE date(entry_date) = date(?1)
+            GROUP BY collector_name
+            HAVING collector_name <> ''
+            ORDER BY earned DESC
+            "#,
+        )
+        .map_err(|error| error.to_string())?;
+    let assemblers = assemblers_stmt
+        .query_map(params![report_date], |row| {
+            Ok(json!({
+                "name": row.get::<_, String>(0)?,
+                "earned": row.get::<_, i64>(1)?,
+            }))
+        })
+        .map_err(|error| error.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+
+    let masters_total: i64 = masters
+        .iter()
+        .map(|item| item.get("earned").and_then(|value| value.as_i64()).unwrap_or(0))
+        .sum();
+    let assemblers_total: i64 = assemblers
+        .iter()
+        .map(|item| item.get("earned").and_then(|value| value.as_i64()).unwrap_or(0))
+        .sum();
+
+    Ok(json!({
+        "date": report_date,
+        "masters": masters,
+        "assemblers": assemblers,
+        "total": masters_total + assemblers_total,
+        "records": records,
+        "source": "local",
+    }))
+}
+
+#[tauri::command]
 fn delete_assembly_entry(app: tauri::AppHandle, local_id: i64, settings: SyncSettings) -> Result<(), String> {
     let conn = open_database(&app)?;
 
@@ -3027,6 +3134,7 @@ pub fn run() {
             create_employee,
             save_assembly,
             list_assemblies,
+            local_salary_report,
             delete_assembly_entry,
             clear_today_assemblies,
             save_employee_advance,
