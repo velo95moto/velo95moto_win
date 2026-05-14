@@ -68,9 +68,10 @@ export function shouldAttemptBackgroundSync({
 export function shouldFastFailManualSync({
   browserOnline = true,
   syncInProgress = false,
+  trustBrowserOnline = true,
 } = {}) {
   if (syncInProgress) return false;
-  return browserOnline === false;
+  return trustBrowserOnline && browserOnline === false;
 }
 
 export function offlineSyncMessage() {

@@ -10,7 +10,7 @@
 
   <body>
     <section class="login-screen" id="login-screen">
-      <form class="login-card" id="login-form">
+      <form class="login-card" id="login-form" action="javascript:void(0)">
         <div class="brand-line">
           <div class="brand-mark">🛠</div>
           <div>
@@ -39,6 +39,38 @@
         <button class="login-button" type="submit">Войти</button>
         <p id="login-status">Введите пароль, чтобы открыть локальную базу. Синхронизация пойдёт в фоне.</p>
       </form>
+      <script>
+        (() => {
+          const form = document.querySelector("#login-form");
+          const status = document.querySelector("#login-status");
+
+          function setLoginStartupError(message) {
+            if (!status) return;
+            status.textContent = message;
+          }
+
+          window.__VELO_LOGIN_READY__ = false;
+
+          window.addEventListener("error", (event) => {
+            setLoginStartupError(`Ошибка запуска интерфейса: ${event.message || "неизвестная ошибка"}`);
+          });
+
+          window.addEventListener("unhandledrejection", (event) => {
+            const reason = event.reason?.message || event.reason || "неизвестная ошибка";
+            setLoginStartupError(`Ошибка запуска интерфейса: ${reason}`);
+          });
+
+          form?.addEventListener("submit", (event) => {
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            if (window.__VELO_LOGIN_READY__ && typeof window.__VELO_LOGIN_SUBMIT__ === "function") {
+              window.__VELO_LOGIN_SUBMIT__(event);
+              return;
+            }
+            setLoginStartupError("Интерфейс входа ещё не загрузился. Закройте программу и откройте снова. Если ошибка повторится, нужен журнал desktop-программы.");
+          }, true);
+        })();
+      </script>
     </section>
 
     <main class="app-shell is-locked" id="app-shell">

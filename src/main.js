@@ -399,7 +399,13 @@ async function runHealthCheck(source = "startup", timeoutMs = 1500) {
     state.network.lastHealth = result;
     state.network.online = Boolean(result.online);
     state.network.mode = result.online ? "online" : "offline";
-    if (!state.network.online) setSyncUiStatus("offline", "Нет интернета");
+    if (state.network.online) {
+      if (state.syncUiStatus === "offline") {
+        setSyncUiStatus(state.lastSuccessfulSyncAt ? "ok" : "idle", state.lastSuccessfulSyncAt ? "Синхронизировано" : "");
+      }
+    } else {
+      setSyncUiStatus("offline", "Нет интернета");
+    }
     const duration = result.duration_ms ?? Math.round(performance.now() - started);
     console.info(`[offline-startup] health-check source=${source} online=${state.network.online} duration_ms=${duration}`);
     auditInfo(
@@ -680,6 +686,7 @@ function renderNavigation() {
   } else {
     switchView("records");
   }
+}
 
 
 function fillSelect(select, items, placeholder) {
@@ -2973,6 +2980,7 @@ async function syncPendingRecords() {
   if (shouldFastFailManualSync({
     browserOnline: browserIsOnline(),
     syncInProgress: state.network.syncInProgress,
+    trustBrowserOnline: false,
   })) {
     state.network.online = false;
     state.network.mode = "offline";
@@ -3591,7 +3599,7 @@ async function startOfflineFirstStartup() {
 }
 
 async function login(event) {
-  event.preventDefault();
+  event?.preventDefault?.();
   serverUrlInput.value = normalizeServerUrl(loginServerUrlInput.value);
   loginServerUrlInput.value = serverUrlInput.value;
   usernameInput.value = loginUsernameInput.value.trim();
@@ -3677,8 +3685,21 @@ async function login(event) {
   }
 }
 
+let loginHandlerAttached = false;
+
+function attachLoginHandler() {
+  if (loginHandlerAttached || !loginForm) return;
+  loginForm.addEventListener("submit", login);
+  loginHandlerAttached = true;
+}
+
+window.__VELO_LOGIN_SUBMIT__ = login;
+window.__VELO_LOGIN_READY__ = true;
+attachLoginHandler();
+
 window.addEventListener("DOMContentLoaded", async () => {
   loadSyncSettings();
+  attachLoginHandler();
   invoke("get_desktop_log_path").then((path) => {
     auditInfo("desktop_log_ready", "Файл журнала desktop-программы готов.", { path });
   }).catch(() => {});
@@ -4030,7 +4051,7 @@ window.addEventListener("DOMContentLoaded", async () => {
       }
     }
   });
-  loginForm.addEventListener("submit", login);
+  attachLoginHandler();
   function openSearch() {
     const query = headerPhoneSearch.value.trim();
     if (!query) return;

@@ -301,6 +301,14 @@ test("sync button without internet fails fast before network requests", () => {
   assert.equal(offlineSyncMessage(), "Нет подключения к интернету. Синхронизация невозможна.");
 });
 
+test("desktop manual sync does not trust stale browser offline state", () => {
+  assert.equal(shouldFastFailManualSync({
+    browserOnline: false,
+    syncInProgress: false,
+    trustBrowserOnline: false,
+  }), false);
+});
+
 test("sync button does not start another job while sync is running", () => {
   assert.equal(shouldFastFailManualSync({
     browserOnline: false,
