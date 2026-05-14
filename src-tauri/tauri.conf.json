@@ -36,7 +36,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDNBRUVCOUU1Rjk2REVBNjgKUldSbzZtMzU1Ym51T2pSM3JYZTlLTWpRMEduY1J1RFN3TVZiK1pCUG0rYlR6U2JaOG9vZnUzMm4K",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEM1MjkxMTdFNjRFMjcxNTIKUldS\nU2NlSmtmaEVweFllbnEvYlY4aFZVL3JKRHhESlVNMlg1QXhRQnR2OUhQSW5Na1BuR0dyY0oK",
       "endpoints": [
         "https://github.com/velo95moto/velo95moto_win/releases/latest/download/latest.json"
       ],
