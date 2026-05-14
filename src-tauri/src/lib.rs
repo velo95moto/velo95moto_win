@@ -1,13 +1,18 @@
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use tauri::Manager;
 
 const DEFAULT_SERVER_URL: &str = "https://velo95moto.ru";
 const LOCAL_DATABASE_FILE: &str = "velo95moto-offline.db";
+const DESKTOP_LOG_FILE: &str = "desktop-audit.log";
+const DESKTOP_LOG_MAX_BYTES: u64 = 5 * 1024 * 1024;
+const UPDATE_MANIFEST_URL: &str =
+    "https://github.com/velo95moto/velo95moto_win/releases/latest/download/latest.json";
 
 fn normalize_server_url(value: &str) -> String {
     let server_url = value.trim().trim_end_matches('/');
@@ -222,6 +227,39 @@ fn database_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 
 fn open_database(app: &tauri::AppHandle) -> Result<Connection, String> {
     Connection::open(database_path(app)?).map_err(|error| error.to_string())
+}
+
+fn desktop_log_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let app_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    fs::create_dir_all(&app_dir).map_err(|error| error.to_string())?;
+    Ok(app_dir.join(DESKTOP_LOG_FILE))
+}
+
+#[tauri::command]
+fn get_desktop_log_path(app: tauri::AppHandle) -> Result<String, String> {
+    Ok(desktop_log_path(&app)?.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn append_desktop_log(app: tauri::AppHandle, event: serde_json::Value) -> Result<(), String> {
+    let path = desktop_log_path(&app)?;
+    if let Ok(metadata) = fs::metadata(&path) {
+        if metadata.len() > DESKTOP_LOG_MAX_BYTES {
+            let rotated = path.with_extension("log.1");
+            let _ = fs::remove_file(&rotated);
+            let _ = fs::rename(&path, rotated);
+        }
+    }
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map_err(|error| error.to_string())?;
+    let line = serde_json::to_string(&event).map_err(|error| error.to_string())?;
+    writeln!(file, "{line}").map_err(|error| error.to_string())
 }
 
 fn ensure_column(
@@ -3090,14 +3128,21 @@ fn api_error_message(status: u16, response: ureq::Response) -> String {
 #[tauri::command]
 async fn check_for_update(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
     use tauri_plugin_updater::UpdaterExt;
+    let current_version = app.package_info().version.to_string();
     let updater = app.updater().map_err(|e| e.to_string())?;
     match updater.check().await {
         Ok(Some(update)) => Ok(serde_json::json!({
             "available": true,
+            "current_version": current_version,
             "version": update.version,
             "notes": update.body.unwrap_or_default(),
+            "manifest_url": UPDATE_MANIFEST_URL,
         })),
-        Ok(None) => Ok(serde_json::json!({ "available": false })),
+        Ok(None) => Ok(serde_json::json!({
+            "available": false,
+            "current_version": current_version,
+            "manifest_url": UPDATE_MANIFEST_URL,
+        })),
         Err(e) => Err(e.to_string()),
     }
 }
@@ -3125,6 +3170,8 @@ pub fn run() {
             init_database,
             login_and_bootstrap,
             health_check,
+            append_desktop_log,
+            get_desktop_log_path,
             save_record,
             list_records,
             mark_record_collected,

@@ -9,6 +9,17 @@ import {
   shouldShowLongSyncWarning,
   shouldAutoSyncAfterReconnect,
 } from "./sync-status.js";
+import {
+  canShowAssemblyOrderCreate,
+  canShowAssemblyOrdersList,
+} from "./nav-policy.js";
+import { createDesktopLogger } from "./desktop-logger.js";
+import {
+  RELEASES_URL,
+  UPDATE_MANIFEST_URL,
+  updateCheckMessage,
+  updateErrorMessage,
+} from "./updater-policy.js";
 
 const { invoke } = window.__TAURI__.core;
 
@@ -189,6 +200,46 @@ const state = {
   },
 };
 
+const DesktopAudit = createDesktopLogger({
+  invoke,
+  getContext: () => ({
+    username: state.bootstrap?.user?.username || usernameInput?.value || loginUsernameInput?.value || "",
+    displayName: state.bootstrap?.user?.display_name || "",
+    roles: state.bootstrap?.roles || {},
+    view: state.currentView || "",
+    online: state.network?.online,
+  }),
+});
+
+function auditInfo(action, description, details = {}) {
+  DesktopAudit.info(action, description, details);
+}
+
+function auditWarning(action, description, details = {}) {
+  DesktopAudit.warning(action, description, details);
+}
+
+function auditError(action, description, details = {}) {
+  DesktopAudit.error(action, description, details);
+}
+
+let lastUiFreezeLogAt = 0;
+
+function startUiFreezeWatchdog() {
+  let expected = performance.now() + 5000;
+  window.setInterval(() => {
+    const now = performance.now();
+    const lag = now - expected;
+    expected = now + 5000;
+    if (lag > 1500 && Date.now() - lastUiFreezeLogAt > 60_000) {
+      lastUiFreezeLogAt = Date.now();
+      auditWarning("ui_freeze_detected", "Обнаружена долгая задержка UI-потока.", {
+        lag_ms: Math.round(lag),
+      });
+    }
+  }, 5000);
+}
+
 function todayIsoDate() {
   return new Date().toISOString().slice(0, 10);
 }
@@ -335,6 +386,7 @@ async function runHealthCheck(source = "startup", timeoutMs = 1500) {
     state.network.online = false;
     state.network.mode = "offline";
     setSyncUiStatus("offline", "Нет интернета");
+    auditWarning("network_health_check", "Проверка сети пропущена: не указан сайт.", { source });
     return false;
   }
 
@@ -350,12 +402,22 @@ async function runHealthCheck(source = "startup", timeoutMs = 1500) {
     if (!state.network.online) setSyncUiStatus("offline", "Нет интернета");
     const duration = result.duration_ms ?? Math.round(performance.now() - started);
     console.info(`[offline-startup] health-check source=${source} online=${state.network.online} duration_ms=${duration}`);
+    auditInfo(
+      result.online ? "network_online" : "network_offline",
+      result.online ? "Сервер доступен." : "Сервер недоступен, программа работает офлайн.",
+      { source, duration_ms: duration, status: result.status, error: result.error },
+    );
     return state.network.online;
   } catch (error) {
     state.network.online = false;
     state.network.mode = "offline";
     setSyncUiStatus("offline", "Нет интернета");
     console.warn(`[offline-startup] health-check source=${source} failed`, error);
+    auditError("network_health_check_failed", "Ошибка проверки сети.", {
+      source,
+      duration_ms: Math.round(performance.now() - started),
+      error: String(error),
+    });
     return false;
   }
 }
@@ -368,6 +430,10 @@ function scheduleReconnectWorker(delayMs = nextReconnectDelayMs({
   state.network.reconnectTimer = window.setTimeout(async () => {
     state.network.reconnectAttempts += 1;
     console.info(`[offline-startup] reconnect attempt=${state.network.reconnectAttempts}`);
+    auditInfo("network_reconnect_attempt", "Попытка восстановления связи.", {
+      attempt: state.network.reconnectAttempts,
+      delay_ms: delayMs,
+    });
     const wasOnline = state.network.online;
     const isOnline = await runHealthCheck("reconnect");
     if (isOnline) state.network.reconnectAttempts = 0;
@@ -380,6 +446,9 @@ function scheduleReconnectWorker(delayMs = nextReconnectDelayMs({
         syncInProgress: state.network.syncInProgress,
       })
     ) {
+      auditInfo("sync_auto_after_reconnect", "Запущена автоматическая синхронизация после восстановления связи.", {
+        pending_total: state.pendingTotal,
+      });
       queueBackgroundSync("reconnect", "Данные синхронизированы после восстановления связи.");
     }
     scheduleReconnectWorker(nextReconnectDelayMs({
@@ -444,6 +513,7 @@ function switchView(viewName) {
     setStatus("Этот раздел пока открывается только на сайте. Основные офлайн-разделы уже доступны здесь.");
     return;
   }
+  closeAllDropdowns();
   state.currentView = viewName;
   document.querySelectorAll(".nav-tab").forEach((button) => {
     button.classList.toggle(
@@ -491,6 +561,12 @@ function switchView(viewName) {
   }
 }
 
+function closeAllDropdowns() {
+  document.querySelectorAll(".nav-dropdown.is-open").forEach((el) => {
+    el.classList.remove("is-open");
+  });
+}
+
 function renderNavigation() {
   const nav = state.bootstrap?.nav || [
     { id: "records", label: "Список", view: "records" },
@@ -524,29 +600,67 @@ function renderNavigation() {
       addButton.className = "nav-dropdown-item";
       addButton.type = "button";
       addButton.textContent = "Добавить работу";
-      addButton.addEventListener("click", () => switchView("add-record"));
+      addButton.addEventListener("click", () => {
+        closeAllDropdowns();
+        switchView("add-record");
+      });
       menu.append(addButton);
+      
+      // Attach mouseenter/mouseleave for dropdown management
+      wrapper.addEventListener("mouseenter", () => {
+        wrapper.classList.add("is-open");
+      });
+      wrapper.addEventListener("mouseleave", () => {
+        wrapper.classList.remove("is-open");
+      });
+      
       wrapper.append(button, menu);
       navItems.append(wrapper);
     } else if (view === "assembly") {
+      const showOrderCreate = canShowAssemblyOrderCreate(state.bootstrap);
+      const showOrdersList = canShowAssemblyOrdersList(state.bootstrap);
       const wrapper = document.createElement("div");
       wrapper.className = "nav-dropdown";
       const menu = document.createElement("div");
       menu.className = "nav-dropdown-menu";
-      const orderButton = document.createElement("button");
-      orderButton.className = "nav-dropdown-item";
-      orderButton.type = "button";
-      orderButton.textContent = "Заказ сборки";
-      orderButton.addEventListener("click", () => switchView("assembly-order"));
-      const ordersButton = document.createElement("button");
-      ordersButton.className = "nav-dropdown-item";
-      ordersButton.type = "button";
-      ordersButton.dataset.view = "assembly-orders";
-      ordersButton.innerHTML = 'Заказы сборок <span id="assembly-orders-nav-badge" class="nav-live-badge is-hidden"></span>';
-      ordersButton.addEventListener("click", () => { AssemblyOrderPoller.markSeen(); switchView("assembly-orders"); });
-      menu.append(orderButton, ordersButton);
-      wrapper.append(button, menu);
-      navItems.append(wrapper);
+      if (showOrderCreate) {
+        const orderButton = document.createElement("button");
+        orderButton.className = "nav-dropdown-item";
+        orderButton.type = "button";
+        orderButton.textContent = "Заказ сборки";
+        orderButton.addEventListener("click", () => {
+          closeAllDropdowns();
+          switchView("assembly-order");
+        });
+        menu.append(orderButton);
+      }
+      if (showOrdersList) {
+        const ordersButton = document.createElement("button");
+        ordersButton.className = "nav-dropdown-item";
+        ordersButton.type = "button";
+        ordersButton.dataset.view = "assembly-orders";
+        ordersButton.innerHTML = 'Заказы сборок <span id="assembly-orders-nav-badge" class="nav-live-badge is-hidden"></span>';
+        ordersButton.addEventListener("click", () => {
+          AssemblyOrderPoller.markSeen();
+          closeAllDropdowns();
+          switchView("assembly-orders");
+        });
+        menu.append(ordersButton);
+      }
+      if (menu.children.length) {
+        // Attach mouseenter/mouseleave for dropdown management
+        wrapper.addEventListener("mouseenter", () => {
+          wrapper.classList.add("is-open");
+        });
+        wrapper.addEventListener("mouseleave", () => {
+          wrapper.classList.remove("is-open");
+        });
+        
+        wrapper.append(button, menu);
+        navItems.append(wrapper);
+      } else {
+        navItems.append(button);
+      }
     } else {
       navItems.append(button);
     }
@@ -566,7 +680,7 @@ function renderNavigation() {
   } else {
     switchView("records");
   }
-}
+
 
 function fillSelect(select, items, placeholder) {
   select.innerHTML = `<option value="">${placeholder}</option>`;
@@ -752,7 +866,7 @@ function applyBootstrap(bootstrap) {
   document.querySelector("#sd-admin")?.classList.toggle("is-hidden", !canAdmin);
   document.querySelector("#sd-timesheet")?.classList.toggle("is-hidden", !canBuh);
   document.querySelector("#sd-audit")?.classList.toggle("is-hidden", !canAudit);
-  const canSeeSettings = canShop || canOp || canAdmin || canBuh || canAudit;
+  const canSeeSettings = true;
   settingsWrapper.classList.toggle("is-hidden", !canSeeSettings);
 }
 
@@ -1061,12 +1175,20 @@ async function handleRecordTableClick(event) {
   if (collectButton) {
     try {
       await invoke("mark_record_collected", { recordKey: collectButton.dataset.id });
+      auditInfo("record_collected_local", "Запись отмечена как забранная локально.", {
+        record_key: collectButton.dataset.id,
+        queued_for_sync: true,
+      });
       await loadRecords();
       if (state.currentView === "records-search") renderHeaderSearchResults(state.headerSearchQuery);
       setStatus("Запись отмечена как 'Забрал' локально. Синхронизация пойдёт в фоне.");
       queueBackgroundSync("record-collected", "Запись отмечена как 'Забрал' и синхронизирована с сайтом.");
     } catch (error) {
       console.error(error);
+      auditError("record_collected_failed", "Ошибка отметки записи как забранной.", {
+        record_key: collectButton.dataset.id,
+        error: String(error),
+      });
       setStatus(`Не удалось отметить 'Забрал': ${error}`);
     }
   }
@@ -1124,6 +1246,10 @@ async function notifyClient(record, method = "call") {
   const settings = currentSettings();
   if (!settings.server_url || !settings.username || !settings.password) {
     setStatus("Для отметки уведомления нужен вход в аккаунт.");
+    auditWarning("client_notify_blocked", "Уведомление клиента не отмечено: нет учётных данных.", {
+      record_key: recordStableId(record),
+      method,
+    });
     return false;
   }
   try {
@@ -1134,16 +1260,27 @@ async function notifyClient(record, method = "call") {
     });
     await invoke("pull_records", { settings });
     await refreshAll();
+    auditInfo("client_notify_success", "Уведомление клиента отмечено.", {
+      record_key: recordStableId(record),
+      method,
+      notification_count: Number(record.notification_count || 0) + 1,
+    });
     setStatus(method === "whatsapp" ? "WhatsApp открыт, уведомление клиента отмечено." : "Уведомление клиента отмечено.");
     return true;
   } catch (error) {
     console.error(error);
+    auditError("client_notify_failed", "Ошибка отметки уведомления клиента.", {
+      record_key: recordStableId(record),
+      method,
+      error: String(error),
+    });
     setStatus(`Не удалось отметить уведомление клиента: ${error}`);
     return false;
   }
 }
 
 function logout() {
+  auditInfo("logout", "Пользователь вышел из desktop-программы.");
   SyncService.stop();
   AssemblyOrderPoller.stop();
   state.bootstrap = null;
@@ -1229,24 +1366,39 @@ async function saveEditedRecord(event) {
   const validationError = validateRecord(formData, parts, services);
   if (validationError) {
     setStatus(validationError);
+    auditWarning("record_edit_validation_failed", "Изменения записи не сохранены: ошибка валидации.", {
+      record_key: state.editingRecordKey,
+      reason: validationError,
+      parts,
+      services,
+    });
     return;
   }
 
   try {
+    const payload = {
+      record_key: state.editingRecordKey,
+      title: String(formData.get("title") || "").trim(),
+      client_name: String(formData.get("clientName") || "").trim(),
+      phone: String(formData.get("phone") || "").replace(/\D/g, "").slice(-10),
+      master: String(formData.get("master") || "").trim(),
+      parts,
+      services,
+      comments: String(formData.get("comments") || "").trim(),
+      free_repair: Boolean(formData.get("freeRepair")),
+      master_only: Boolean(formData.get("masterOnly")),
+      total_amount: Boolean(formData.get("masterOnly")) ? Math.floor(services / 2) : parts + services,
+    };
     await invoke("update_record", {
-      record: {
-        record_key: state.editingRecordKey,
-        title: String(formData.get("title") || "").trim(),
-        client_name: String(formData.get("clientName") || "").trim(),
-        phone: String(formData.get("phone") || "").replace(/\D/g, "").slice(-10),
-        master: String(formData.get("master") || "").trim(),
-        parts,
-        services,
-        comments: String(formData.get("comments") || "").trim(),
-        free_repair: Boolean(formData.get("freeRepair")),
-        master_only: Boolean(formData.get("masterOnly")),
-        total_amount: Boolean(formData.get("masterOnly")) ? Math.floor(services / 2) : parts + services,
-      },
+      record: payload,
+    });
+    auditInfo("record_update_local", "Запись изменена локально и поставлена в очередь синхронизации.", {
+      record_key: payload.record_key,
+      total_amount: payload.total_amount,
+      parts,
+      services,
+      master: payload.master,
+      queued_for_sync: true,
     });
     recordEditModal.close();
     await loadRecords();
@@ -1254,6 +1406,10 @@ async function saveEditedRecord(event) {
     queueBackgroundSync("record-edit", "Изменения записи синхронизированы с сайтом.");
   } catch (error) {
     console.error(error);
+    auditError("record_update_failed", "Ошибка сохранения изменений записи.", {
+      record_key: state.editingRecordKey,
+      error: String(error),
+    });
     setStatus(`Не удалось сохранить изменения: ${error}`);
   }
 }
@@ -1396,24 +1552,53 @@ async function createAssemblyOrder(event) {
     assemblyOrderForm.reset();
     assemblyOrderQuantity.value = "1";
     assemblyOrderCreateStatus.textContent = `Создано заказов: ${created}.`;
+    auditInfo("assembly_order_create_local", "Заказ сборки создан локально и поставлен в очередь синхронизации.", {
+      name,
+      quantity,
+      is_urgent: assemblyOrderUrgent.checked,
+      created_count: created,
+      queued_for_sync: true,
+    });
     await loadAssemblyOrders();
     await refreshPendingSyncSummary();
     queueBackgroundSync("assembly-order-create", "Заказ сборки синхронизирован с сайтом.");
   } catch (error) {
     console.error(error);
+    auditError("assembly_order_create_failed", "Ошибка создания заказа сборки.", {
+      name,
+      quantity,
+      is_urgent: assemblyOrderUrgent.checked,
+      error: String(error),
+    });
     assemblyOrderCreateStatus.textContent = String(error);
   }
 }
 
 async function changeAssemblyOrder(orderId, action, collectorName = "") {
-  await invoke("update_assembly_order_status", {
-    orderId: Number(orderId),
-    action,
-    collectorName: collectorName || null,
-  });
-  await loadAssemblyOrders();
-  await refreshPendingSyncSummary();
-  queueBackgroundSync("assembly-order-update", "Изменения заказа синхронизированы с сайтом.");
+  try {
+    await invoke("update_assembly_order_status", {
+      orderId: Number(orderId),
+      action,
+      collectorName: collectorName || null,
+    });
+    auditInfo("assembly_order_update_local", "Статус заказа сборки изменён локально.", {
+      local_id: Number(orderId),
+      action,
+      collector_name: collectorName || "",
+      queued_for_sync: true,
+    });
+    await loadAssemblyOrders();
+    await refreshPendingSyncSummary();
+    queueBackgroundSync("assembly-order-update", "Изменения заказа синхронизированы с сайтом.");
+  } catch (error) {
+    auditError("assembly_order_update_failed", "Ошибка изменения заказа сборки.", {
+      local_id: Number(orderId),
+      action,
+      collector_name: collectorName || "",
+      error: String(error),
+    });
+    throw error;
+  }
 }
 
 async function loadAssemblies() {
@@ -1501,9 +1686,10 @@ async function saveAssemblyForCollector(collectorName, amountInput, button) {
 
   button.disabled = true;
   try {
+    const syncUuid = crypto.randomUUID();
     await invoke("save_assembly", {
       assembly: {
-        sync_uuid: crypto.randomUUID(),
+        sync_uuid: syncUuid,
         entry_date: todayIsoDate(),
         collector_name: collectorName,
         amount,
@@ -1511,11 +1697,25 @@ async function saveAssemblyForCollector(collectorName, amountInput, button) {
         assembly_order_id: assemblyOrderId,
       },
     });
+    auditInfo("assembly_create_local", "Сборка сохранена локально и поставлена в очередь синхронизации.", {
+      sync_uuid: syncUuid,
+      collector_name: collectorName,
+      amount,
+      assembly_count: 1,
+      assembly_order_id: assemblyOrderId,
+      queued_for_sync: true,
+    });
     amountInput.value = "0";
     await loadAssemblies();
     await refreshPendingSyncSummary();
   } catch (error) {
     console.error(error);
+    auditError("assembly_create_failed", "Ошибка сохранения сборки.", {
+      collector_name: collectorName,
+      amount,
+      assembly_order_id: assemblyOrderId,
+      error: String(error),
+    });
     setStatus(`Ошибка сохранения сборки: ${error}`);
   } finally {
     button.disabled = false;
@@ -1524,6 +1724,7 @@ async function saveAssemblyForCollector(collectorName, amountInput, button) {
 
 async function deleteAssemblyEntry(localId) {
   await invoke("delete_assembly_entry", { localId: Number(localId), settings: currentSettings() });
+  auditInfo("assembly_delete_local", "Сборка удалена локально.", { local_id: Number(localId), queued_for_sync: true });
   loadAssemblies(); // без await — список обновляется в фоне
 }
 
@@ -1729,6 +1930,12 @@ async function saveAdvanceForEmployee(employeeName, input, button) {
       amount,
       advanceDate,
     });
+    auditInfo("advance_create_local", "Аванс сохранён локально и поставлен в очередь синхронизации.", {
+      employee_name: employeeName,
+      amount,
+      advance_date: advanceDate,
+      queued_for_sync: true,
+    });
     input.value = "";
     state.employeeAdvances = await invoke("list_employee_advances", { date: advanceDate });
     renderAdvances();
@@ -1737,6 +1944,11 @@ async function saveAdvanceForEmployee(employeeName, input, button) {
     queueBackgroundSync("advance-save", "Аванс синхронизирован с сайтом.");
   } catch (error) {
     console.error(error);
+    auditError("advance_create_failed", "Ошибка сохранения аванса.", {
+      employee_name: employeeName,
+      amount,
+      error: String(error),
+    });
     setStatus(`Ошибка сохранения аванса: ${error}`);
   } finally {
     button.disabled = false;
@@ -1799,6 +2011,7 @@ function initAdvanceDebtPanels() {
 
 async function deleteAdvance(localId) {
   await invoke("delete_employee_advance", { localId: Number(localId), settings: currentSettings() });
+  auditInfo("advance_delete_local", "Аванс удалён локально.", { local_id: Number(localId), queued_for_sync: true });
   state.employeeAdvances = await invoke("list_employee_advances", { date: todayIsoDate() });
   renderAdvances();
   setStatus("Аванс удалён локально.");
@@ -2022,15 +2235,30 @@ async function saveDailyTimesheet(event) {
   if (!rows.length) return;
   setAdminStatus(dailyTimesheetStatus, "Сохраняю табель...");
   try {
+    auditInfo("timesheet_save_start", "Начато сохранение табеля.", {
+      date: state.dailyTimesheet.date,
+      rows_count: rows.length,
+    });
     const result = await apiRequest("POST", "mobile/timesheet/daily/", {
       date: state.dailyTimesheet.date,
       rows,
+    });
+    auditInfo("timesheet_save_success", "Табель сохранён через mobile API.", {
+      date: state.dailyTimesheet.date,
+      rows_count: rows.length,
+      saved: result.saved || rows.length,
     });
     setAdminStatus(dailyTimesheetStatus, `Табель сохранён. Строк: ${result.saved || rows.length}.`);
     showToast("Табель сохранён.");
     await loadDailyTimesheetView();
   } catch (error) {
     console.error(error);
+    auditError("timesheet_save_failed", "Ошибка сохранения табеля через mobile API.", {
+      endpoint: "mobile/timesheet/daily/",
+      date: state.dailyTimesheet.date,
+      rows_count: rows.length,
+      error: String(error),
+    });
     setAdminStatus(dailyTimesheetStatus, `Ошибка сохранения табеля: ${error}`, true);
   }
 }
@@ -2522,6 +2750,7 @@ async function loadSalaryView() {
     renderSalaryData(cache);
     if (!state.network.online || !browserIsOnline()) {
       setAdminStatus(salaryStatus, "Показаны последние сохранённые данные (офлайн).");
+      auditInfo("salary_offline_cache_used", "Зарплата открыта из сохранённого кэша офлайн.", { date: dateValue });
       return;
     }
     const t0Salary = performance.now();
@@ -2530,6 +2759,7 @@ async function loadSalaryView() {
       writeSalaryCache(data);
       renderSalaryData(data);
       setAdminStatus(salaryStatus, "");
+      auditInfo("salary_cache_refreshed", "Кэш зарплаты обновлён с сайта.", { date: dateValue });
     }).catch(() => {});
     return;
   }
@@ -2544,8 +2774,10 @@ async function loadSalaryView() {
           ? "Показаны последние сохранённые данные (офлайн)."
           : "Показаны данные из локальной базы (офлайн).",
       );
+      auditInfo("salary_offline_fallback_used", "Зарплата открыта из локальных данных офлайн.", { date: dateValue, source });
     } catch (error) {
       console.error(error);
+      auditError("salary_offline_fallback_failed", "Не удалось открыть зарплату офлайн.", { date: dateValue, error: String(error) });
       setAdminStatus(salaryStatus, "Нет сохранённых данных зарплаты для офлайн-просмотра.", true);
     }
     return;
@@ -2559,6 +2791,7 @@ async function loadSalaryView() {
     writeSalaryCache(data);
     renderSalaryData(data);
     setAdminStatus(salaryStatus, "");
+    auditInfo("salary_load_success", "Зарплата загружена с сайта и сохранена в кэш.", { date: dateValue });
   } catch (error) {
     console.error(error);
     try {
@@ -2570,7 +2803,13 @@ async function loadSalaryView() {
           ? "Сервер недоступен. Показаны последние сохранённые данные."
           : "Сервер недоступен. Показаны данные из локальной базы.",
       );
+      auditWarning("salary_online_failed_fallback_used", "Сервер зарплаты недоступен, показаны локальные данные.", {
+        date: dateValue,
+        source,
+        error: String(error),
+      });
     } catch {
+      auditError("salary_load_failed", "Не удалось загрузить зарплату ни с сайта, ни локально.", { date: dateValue, error: String(error) });
       setAdminStatus(salaryStatus, `Ошибка: ${error}`, true);
     }
   }
@@ -2662,26 +2901,42 @@ async function saveRecord(event) {
   const validationError = validateRecord(formData, parts, services);
   if (validationError) {
     setStatus(validationError);
+    auditWarning("record_validation_failed", "Запись не сохранена: ошибка валидации.", {
+      reason: validationError,
+      parts,
+      services,
+    });
     return;
   }
 
   try {
     setStatus("Сохраняю запись в локальную базу...");
+    const syncUuid = crypto.randomUUID();
+    const recordPayload = {
+      sync_uuid: syncUuid,
+      record_date: todayIsoDate(),
+      title: String(formData.get("title") || "").trim(),
+      client_name: String(formData.get("clientName") || "").trim(),
+      phone: String(formData.get("phone") || "").replace(/\D/g, "").slice(-10),
+      master: String(formData.get("master") || "").trim(),
+      parts,
+      services,
+      comments: String(formData.get("comments") || "").trim(),
+      free_repair: Boolean(formData.get("freeRepair")),
+      master_only: Boolean(formData.get("masterOnly")),
+      total_amount: parts + services,
+    };
     const localId = await invoke("save_record", {
-      record: {
-        sync_uuid: crypto.randomUUID(),
-        record_date: todayIsoDate(),
-        title: String(formData.get("title") || "").trim(),
-        client_name: String(formData.get("clientName") || "").trim(),
-        phone: String(formData.get("phone") || "").replace(/\D/g, "").slice(-10),
-        master: String(formData.get("master") || "").trim(),
-        parts,
-        services,
-        comments: String(formData.get("comments") || "").trim(),
-        free_repair: Boolean(formData.get("freeRepair")),
-        master_only: Boolean(formData.get("masterOnly")),
-        total_amount: parts + services,
-      },
+      record: recordPayload,
+    });
+    auditInfo("record_create_local", "Запись сохранена локально и поставлена в очередь синхронизации.", {
+      local_id: localId,
+      sync_uuid: syncUuid,
+      total_amount: recordPayload.total_amount,
+      parts,
+      services,
+      master: recordPayload.master,
+      queued_for_sync: true,
     });
     recordForm.reset();
     clientNameInput.value = "Клиент";
@@ -2696,6 +2951,7 @@ async function saveRecord(event) {
     queueBackgroundSync("record-save", `Запись L-${localId} синхронизирована с сайтом.`);
   } catch (error) {
     console.error(error);
+    auditError("record_create_failed", "Ошибка сохранения записи в локальную базу.", { error: String(error), parts, services });
     setStatus(`Ошибка сохранения записи: ${error}`);
   }
 }
@@ -2706,10 +2962,12 @@ async function syncPendingRecords() {
   const settings = currentSettings();
   if (!settings.server_url) {
     setStatus("Укажите адрес сайта.");
+    auditWarning("sync_manual_blocked", "Ручная синхронизация не запущена: не указан сайт.");
     return;
   }
   if (!settings.username || !settings.password) {
     setStatus("Введите логин и пароль от сайта.");
+    auditWarning("sync_manual_blocked", "Ручная синхронизация не запущена: нет логина или пароля.");
     return;
   }
   if (shouldFastFailManualSync({
@@ -2721,11 +2979,17 @@ async function syncPendingRecords() {
     const message = offlineSyncMessage();
     setSyncUiStatus("offline", "Нет интернета");
     setStatus(message, true);
+    auditWarning("sync_manual_offline", "Ручная синхронизация невозможна: нет подключения к интернету.", {
+      pending_total: state.pendingTotal,
+    });
     scheduleReconnectWorker();
     return;
   }
   if (state.network.syncInProgress) {
     setStatus("Синхронизация уже выполняется.");
+    auditWarning("sync_manual_skipped", "Ручная синхронизация пропущена: уже выполняется другая синхронизация.", {
+      pending_total: state.pendingTotal,
+    });
     return;
   }
 
@@ -2736,12 +3000,16 @@ async function syncPendingRecords() {
       const message = offlineSyncMessage();
       setSyncUiStatus("offline", "Нет интернета");
       setStatus(message, true);
+      auditWarning("sync_manual_offline", "Ручная синхронизация остановлена после быстрой проверки сети.", {
+        pending_total: state.pendingTotal,
+      });
       scheduleReconnectWorker();
       return;
     }
     await syncNow("Данные синхронизированы с сайтом.", { reason: "manual", forceHealth: false });
   } catch (error) {
     console.error(error);
+    auditError("sync_manual_failed", "Ошибка ручной синхронизации.", { error: String(error), pending_total: state.pendingTotal });
     setStatus(`Ошибка синхронизации: ${error}`);
   }
 }
@@ -2751,25 +3019,47 @@ async function syncNow(successMessage = "Действие синхронизир
   if (!hasSyncCredentials(settings)) {
     await refreshAll();
     if (!options.background) setStatus("Введите логин и пароль от сайта.", true);
+    auditWarning("sync_skipped_no_credentials", "Синхронизация не запущена: нет учётных данных.", {
+      reason: options.reason || "background",
+      background: Boolean(options.background),
+    });
     return false;
   }
   if (state.network.syncInProgress) {
     console.info(`[offline-startup] sync skipped reason=${options.reason || "background"} already_running=true`);
     if (!options.background) setStatus("Синхронизация уже выполняется.");
+    auditWarning("sync_skipped_already_running", "Синхронизация пропущена: другая синхронизация уже выполняется.", {
+      reason: options.reason || "background",
+      pending_total: state.pendingTotal,
+    });
     return false;
   }
 
   state.network.syncInProgress = true;
   updateSyncButton();
+  const syncStartedAt = performance.now();
   try {
     if (options.background && !state.network.online && !options.forceHealth) {
       setSyncUiStatus("offline", "Нет интернета");
       console.info(`[offline-startup] background sync skipped reason=${options.reason || "background"} mode=offline`);
+      auditWarning("sync_deferred_offline", "Фоновая синхронизация отложена: программа офлайн.", {
+        reason: options.reason || "background",
+        pending_total: state.pendingTotal,
+      });
       scheduleReconnectWorker();
       return false;
     }
 
     setSyncUiStatus("syncing", "Синхронизация...");
+    auditInfo("sync_start", "Начата синхронизация desktop-программы.", {
+      reason: options.reason || "background",
+      background: Boolean(options.background),
+      pending_records: state.pendingRecords,
+      pending_assemblies: state.pendingAssemblies,
+      pending_advances: state.pendingAdvances,
+      pending_orders: state.pendingOrders,
+      pending_total: state.pendingTotal,
+    });
     if (!state.network.online || options.forceHealth) {
       const online = await runHealthCheck(options.reason || "sync");
       if (!online) {
@@ -2777,6 +3067,11 @@ async function syncNow(successMessage = "Действие синхронизир
         setSyncUiStatus("offline", "Нет интернета");
         if (!options.background) setStatus("Нет подключения к интернету.", true);
         console.info(`[offline-startup] sync deferred reason=${options.reason || "background"} mode=offline`);
+        auditWarning("sync_deferred_offline", "Синхронизация отложена: сайт недоступен.", {
+          reason: options.reason || "background",
+          duration_ms: Math.round(performance.now() - syncStartedAt),
+          pending_total: state.pendingTotal,
+        });
         return false;
       }
     }
@@ -2794,12 +3089,24 @@ async function syncNow(successMessage = "Действие синхронизир
     if (successMessage && !options.background) setStatus(successMessage);
     else if (message.includes("уже отметили")) setStatus(message);
     console.info(`[offline-startup] sync success reason=${options.reason || "background"}`);
+    auditInfo("sync_success", "Синхронизация успешно завершена.", {
+      reason: options.reason || "background",
+      duration_ms: Math.round(performance.now() - syncStartedAt),
+      result: message,
+      last_successful_sync_at: state.lastSuccessfulSyncAt,
+    });
     return true;
   } catch (error) {
     console.error(error);
     const errorMessage = `Ошибка синхронизации: ${String(error)}`;
     setSyncUiStatus("error", errorMessage);
     console.warn(`[offline-startup] sync error reason=${options.reason || "background"}`, error);
+    auditError("sync_failed", "Синхронизация завершилась ошибкой.", {
+      reason: options.reason || "background",
+      duration_ms: Math.round(performance.now() - syncStartedAt),
+      error: String(error),
+      pending_total: state.pendingTotal,
+    });
     if (!options.background) setStatus(errorMessage, true);
     await refreshAll();
     return false;
@@ -3049,17 +3356,47 @@ const AssemblyOrderPoller = (() => {
   };
 })();
 
-async function checkForUpdate() {
+async function checkForUpdate({ manual = false } = {}) {
+  const started = performance.now();
+  auditInfo("update_check_start", manual ? "Ручная проверка обновлений запущена." : "Авто-проверка обновлений запущена.", {
+    manifest_url: UPDATE_MANIFEST_URL,
+    manual,
+  });
   try {
     const result = await invoke("check_for_update");
-    if (!result?.available) return;
-    showUpdateBanner(result.version, result.notes);
+    auditInfo("update_check_result", result?.available ? "Найдена новая версия программы." : "Новая версия программы не найдена.", {
+      manifest_url: result?.manifest_url || UPDATE_MANIFEST_URL,
+      current_version: result?.current_version,
+      latest_version: result?.version,
+      available: Boolean(result?.available),
+      duration_ms: Math.round(performance.now() - started),
+      manual,
+    });
+    if (!result?.available) {
+      if (manual) showToast(updateCheckMessage(result));
+      return result;
+    }
+    showUpdateBanner(result.version, result.notes, result);
+    if (manual) showToast(updateCheckMessage(result));
+    return result;
   } catch (e) {
+    const message = updateErrorMessage(e);
+    auditError("update_check_failed", "Ошибка проверки обновлений.", {
+      manifest_url: UPDATE_MANIFEST_URL,
+      error: String(e),
+      duration_ms: Math.round(performance.now() - started),
+      manual,
+    });
     console.info("[updater] check skipped:", e);
+    if (manual) {
+      showToast(message, true);
+      setStatus(message, true);
+    }
+    return { available: false, error: String(e) };
   }
 }
 
-function showUpdateBanner(version, notes) {
+function showUpdateBanner(version, notes, result = {}) {
   const existing = document.getElementById("update-banner");
   if (existing) existing.remove();
   const banner = document.createElement("div");
@@ -3067,21 +3404,43 @@ function showUpdateBanner(version, notes) {
   banner.className = "update-banner";
   banner.innerHTML = `
     <span class="update-banner__text">
-      Доступна новая версия <strong>v${escapeHtml(version)}</strong>
+      Доступна новая версия программы <strong>v${escapeHtml(version)}</strong>
     </span>
-    <button class="update-banner__btn" id="update-apply-btn" type="button">Обновить сейчас</button>
-    <button class="update-banner__close" id="update-dismiss-btn" type="button" aria-label="Закрыть">×</button>
+    <button class="update-banner__btn" id="update-apply-btn" type="button">Скачать и установить</button>
+    <button class="update-banner__btn update-banner__btn--secondary" id="update-release-btn" type="button">Скачать вручную</button>
+    <button class="update-banner__close" id="update-dismiss-btn" type="button" aria-label="Позже">×</button>
   `;
   document.body.append(banner);
   document.getElementById("update-apply-btn").addEventListener("click", async () => {
     const btn = document.getElementById("update-apply-btn");
-    if (btn) { btn.disabled = true; btn.textContent = "Загружаю..."; }
+    if (btn) { btn.disabled = true; btn.textContent = "Устанавливаю..."; }
+    auditInfo("update_install_start", "Начата установка обновления.", {
+      current_version: result.current_version,
+      latest_version: version,
+      manifest_url: result.manifest_url || UPDATE_MANIFEST_URL,
+    });
     try {
       await invoke("apply_update");
+      auditInfo("update_install_success", "Обновление установлено, программа перезапускается.", {
+        latest_version: version,
+      });
     } catch (e) {
-      showToast(`Ошибка обновления: ${e}`);
-      if (btn) { btn.disabled = false; btn.textContent = "Обновить сейчас"; }
+      const message = `Ошибка обновления: ${e}`;
+      auditError("update_install_failed", "Ошибка установки обновления.", {
+        latest_version: version,
+        error: String(e),
+      });
+      showToast(message, true);
+      setStatus(message, true);
+      if (btn) { btn.disabled = false; btn.textContent = "Скачать и установить"; }
     }
+  });
+  document.getElementById("update-release-btn").addEventListener("click", () => {
+    auditInfo("update_manual_download_opened", "Пользователь открыл страницу релиза для ручной установки.", {
+      releases_url: RELEASES_URL,
+      latest_version: version,
+    });
+    window.__TAURI__.opener.openUrl(RELEASES_URL);
   });
   document.getElementById("update-dismiss-btn").addEventListener("click", () => banner.remove());
 }
@@ -3094,9 +3453,11 @@ async function pullFromSite(reason = "Обновляю данные с сайт�
   const isAuto = reason.includes("Автоматически");
   try {
     if (!isAuto) setStatus(reason);
+    auditInfo("pull_from_site_start", "Начато обновление локальных данных с сайта.", { reason, auto: isAuto });
     const online = await runHealthCheck(isAuto ? "auto-refresh" : "manual-refresh");
     if (!online) {
       if (!isAuto) setStatus("Сервер недоступен. Показаны локальные данные.");
+      auditWarning("pull_from_site_offline", "Обновление с сайта отложено: сервер недоступен.", { reason, auto: isAuto });
       return;
     }
     const bootstrap = await invoke("login_and_bootstrap", { settings });
@@ -3107,8 +3468,10 @@ async function pullFromSite(reason = "Обновляю данные с сайт�
     if (!isAuto) {
       setStatus(`Синхронизировано в ${new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })}.`);
     }
+    auditInfo("pull_from_site_success", "Локальные данные обновлены с сайта.", { reason, auto: isAuto });
   } catch (error) {
     console.error(error);
+    auditError("pull_from_site_failed", "Ошибка обновления локальных данных с сайта.", { reason, auto: isAuto, error: String(error) });
     if (!isAuto) setStatus("Не синхронизировано с сайтом.");
   }
 }
@@ -3214,6 +3577,9 @@ async function startOfflineFirstStartup() {
   // Health check — в фоне, только обновляет статус-строку
   runHealthCheck("startup").then((online) => {
     console.info(`[offline-startup] startup mode=${online ? "online" : "offline"}`);
+    auditInfo(online ? "startup_online" : "startup_offline", online ? "Запуск с доступным сервером." : "Запуск без интернета, используются локальные данные.", {
+      online,
+    });
     if (!online) {
       loginStatus.textContent = "Офлайн-режим. Введите пароль, чтобы открыть локальную базу.";
       scheduleReconnectWorker(nextReconnectDelayMs({ online: false, attempts: 0 }));
@@ -3234,10 +3600,18 @@ async function login(event) {
   const settings = currentSettings();
   if (!hasSyncCredentials(settings)) {
     loginStatus.textContent = "Введите сайт, логин и пароль.";
+    auditWarning("login_validation_failed", "Вход не начат: не заполнены сайт, логин или пароль.", {
+      username: settings.username,
+      server_url: settings.server_url,
+    });
     return;
   }
 
   loginStatus.textContent = "Проверяю пароль...";
+  auditInfo("login_start", "Пользователь начал вход в desktop-программу.", {
+    username: settings.username,
+    server_url: settings.server_url,
+  });
 
   // Сначала мгновенная проверка локального пароля (не нужна сеть)
   const offlineAllowed = await canOpenOfflineWithPassword(settings);
@@ -3247,6 +3621,10 @@ async function login(event) {
     showLocalUi();
     syncPanel.classList.add("is-hidden");
     setStatus("Локальная база открыта. Синхронизация пойдёт в фоне.");
+    auditInfo("login_offline_success", "Вход выполнен по локально подтверждённому паролю.", {
+      username: settings.username,
+      has_cached_bootstrap: Boolean(offlineBootstrap),
+    });
     SyncService.start();
     scheduleReconnectWorker(nextReconnectDelayMs({ online: state.network.online, attempts: 0 }));
     maybePromptTouchId();
@@ -3262,6 +3640,9 @@ async function login(event) {
   if (!online) {
     loginStatus.textContent = "Нет связи с сервером, и этот пароль не подтверждён локально. Локальная база не открыта.";
     setStatus("Вход не выполнен.");
+    auditWarning("login_offline_denied", "Вход офлайн отклонён: пароль не был подтверждён локально.", {
+      username: settings.username,
+    });
     scheduleReconnectWorker(nextReconnectDelayMs({ online: false, attempts: 0 }));
     return;
   }
@@ -3274,6 +3655,11 @@ async function login(event) {
     showLocalUi();
     syncPanel.classList.add("is-hidden");
     setStatus("Вход выполнен. Локальная база открыта, синхронизация пойдёт в фоне.");
+    auditInfo("login_success", "Вход выполнен через сервер.", {
+      username: settings.username,
+      display_name: bootstrap.user?.display_name || "",
+      roles: bootstrap.roles || {},
+    });
     SyncService.start();
     scheduleReconnectWorker(nextReconnectDelayMs({ online: true }));
     maybePromptTouchId();
@@ -3283,11 +3669,19 @@ async function login(event) {
     console.error(error);
     loginStatus.textContent = `Неверный логин или пароль. Локальная база не открыта.`;
     setStatus("Вход не выполнен.");
+    auditError("login_failed", "Ошибка авторизации через сервер.", {
+      username: settings.username,
+      server_url: settings.server_url,
+      error: String(error),
+    });
   }
 }
 
 window.addEventListener("DOMContentLoaded", async () => {
   loadSyncSettings();
+  invoke("get_desktop_log_path").then((path) => {
+    auditInfo("desktop_log_ready", "Файл журнала desktop-программы готов.", { path });
+  }).catch(() => {});
   if (recordDetailsModal && recordDetailsModal.parentElement !== document.body) {
     document.body.append(recordDetailsModal);
   }
@@ -3300,6 +3694,8 @@ window.addEventListener("DOMContentLoaded", async () => {
 
   try {
     await invoke("init_database");
+    auditInfo("desktop_startup", "Desktop-программа запущена, локальная база инициализирована.");
+    startUiFreezeWatchdog();
     // Мгновенный старт: UI из локальной SQLite, сеть не ждём
     await refreshAll();
     renderNavigation();
@@ -3324,6 +3720,7 @@ window.addEventListener("DOMContentLoaded", async () => {
     window.setTimeout(startOfflineFirstStartup, 0);
   } catch (error) {
     console.error(error);
+    auditError("desktop_startup_failed", "Ошибка запуска desktop-программы или локальной базы.", { error: String(error) });
     setStatus(`Ошибка локальной базы: ${error}`);
   }
 
@@ -3616,11 +4013,19 @@ window.addEventListener("DOMContentLoaded", async () => {
     if (collectButton) {
       try {
         await invoke("mark_record_collected", { recordKey: collectButton.dataset.id });
+        auditInfo("salary_record_collected_local", "Запись из раздела зарплаты отмечена как забранная локально.", {
+          record_key: collectButton.dataset.id,
+          queued_for_sync: true,
+        });
         setAdminStatus(salaryStatus, "Запись отмечена как 'Забрал' локально. Синхронизация пойдёт в фоне.");
         queueBackgroundSync("salary-record-collected", "Запись отмечена как 'Забрал' и синхронизирована с сайтом.");
         await loadSalaryView();
       } catch (error) {
         console.error(error);
+        auditError("salary_record_collected_failed", "Ошибка отметки записи как забранной из раздела зарплаты.", {
+          record_key: collectButton.dataset.id,
+          error: String(error),
+        });
         setAdminStatus(salaryStatus, `Не удалось отметить 'Забрал': ${error}`, true);
       }
     }
@@ -3667,9 +4072,13 @@ window.addEventListener("DOMContentLoaded", async () => {
     state.network.mode = "offline";
     setSyncUiStatus("offline", "Нет интернета");
     setStatus("Нет интернета.");
+    auditWarning("network_offline", "Браузер сообщил о потере интернета.", {
+      pending_total: state.pendingTotal,
+    });
     scheduleReconnectWorker(nextReconnectDelayMs({ online: false, attempts: 0 }));
   });
   window.addEventListener("online", async () => {
+    auditInfo("network_online_event", "Браузер сообщил о восстановлении интернета.");
     const online = await runHealthCheck("browser-online");
     if (online) {
       await handleConfirmedOnline("browser-online");
@@ -3693,6 +4102,10 @@ window.addEventListener("DOMContentLoaded", async () => {
   document.querySelector("#sd-operator").addEventListener("click", () => { settingsDropdown.classList.add("is-hidden"); switchView("operator"); });
   document.querySelector("#sd-admin").addEventListener("click", () => { settingsDropdown.classList.add("is-hidden"); switchView("users"); });
   document.querySelector("#sd-shop").addEventListener("click", () => { settingsDropdown.classList.add("is-hidden"); switchView("shop"); });
+  document.querySelector("#sd-update").addEventListener("click", () => {
+    settingsDropdown.classList.add("is-hidden");
+    checkForUpdate({ manual: true });
+  });
 
   initTouchId();
 
@@ -3756,6 +4169,13 @@ window.addEventListener("DOMContentLoaded", async () => {
   });
   document.addEventListener("scroll", () => notifyTooltipEl.classList.remove("is-visible"), true);
   window.addEventListener("resize", () => notifyTooltipEl.classList.remove("is-visible"));
+
+  // Close dropdowns when clicking outside them
+  document.addEventListener("click", (event) => {
+    if (!event.target.closest(".nav-dropdown")) {
+      closeAllDropdowns();
+    }
+  });
 });
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -3776,6 +4196,7 @@ async function apiRequest(method, path, body = null) {
   const settings = currentSettings();
   const serverUrl = settings.server_url;
   let token = getToken();
+  const started = performance.now();
 
   // Токен пустой — случается после офлайн-входа (access_token не хранится в localStorage).
   // Пробуем получить свежий, если сеть доступна.
@@ -3785,20 +4206,45 @@ async function apiRequest(method, path, body = null) {
       applyBootstrap(freshBootstrap);
       token = getToken();
       console.debug(`[api] token refreshed for ${method} ${path} — scheme=Bearer len=${token.length}`);
+      auditInfo("auth_token_refreshed", "Токен авторизации обновлён для mobile API.", { method, endpoint: path });
     } catch (err) {
       console.warn(`[api] token refresh failed for ${method} ${path}:`, String(err).slice(0, 120));
+      auditWarning("auth_token_refresh_failed", "Не удалось обновить токен авторизации.", {
+        method,
+        endpoint: path,
+        error: String(err),
+      });
     }
   }
 
   if (!token) {
     console.warn(`[api] ${method} ${path} — token MISSING, request will fail`);
+    auditWarning("api_request_no_token", "Запрос mobile API выполняется без токена.", { method, endpoint: path });
   } else {
     console.debug(`[api] ${method} ${path} — auth=Bearer present`);
   }
 
   const args = { serverUrl, token, method, path };
   if (body !== null) args.body = body;
-  return invoke("api_request", args);
+  try {
+    const result = await invoke("api_request", args);
+    const duration = Math.round(performance.now() - started);
+    if (duration > 1500) {
+      auditWarning("api_request_slow", "Медленный запрос mobile API.", { method, endpoint: path, duration_ms: duration });
+    } else if (String(method).toUpperCase() !== "GET") {
+      auditInfo("api_request_success", "Запрос mobile API выполнен.", { method, endpoint: path, duration_ms: duration });
+    }
+    return result;
+  } catch (error) {
+    auditError("api_request_failed", "Ошибка запроса mobile API.", {
+      method,
+      endpoint: path,
+      duration_ms: Math.round(performance.now() - started),
+      payload: body,
+      error: String(error),
+    });
+    throw error;
+  }
 }
 
 function setAdminStatus(el, msg, isError = false) {

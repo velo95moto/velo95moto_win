@@ -13,8 +13,128 @@ import {
   shouldFastFailManualSync,
   shouldShowLongSyncWarning,
 } from "./sync-status.js";
+import {
+  canShowAssemblyOrderCreate,
+  canShowAssemblyOrdersList,
+} from "./nav-policy.js";
+import {
+  buildDesktopLogEvent,
+  createDesktopLogger,
+  redactSensitive,
+} from "./desktop-logger.js";
+import {
+  UPDATE_MANIFEST_URL,
+  updateCheckMessage,
+  updateErrorMessage,
+} from "./updater-policy.js";
 
 const now = Date.parse("2026-05-13T13:00:00Z");
+
+test("operator sees assembly orders list but not assembly order create", () => {
+  const bootstrap = {
+    roles: { is_operator_role: true, is_view_only_role: false },
+    nav: [
+      { id: "assembly", label: "Сборка", view: "assembly" },
+      { id: "assembly_orders", label: "Заказы сборок", view: "disabled" },
+    ],
+  };
+  assert.equal(canShowAssemblyOrderCreate(bootstrap), false);
+  assert.equal(canShowAssemblyOrdersList(bootstrap), true);
+});
+
+test("Velo95Moto role sees assembly order create but not assembly orders list", () => {
+  const bootstrap = {
+    roles: { is_operator_role: false, is_view_only_role: true },
+    nav: [
+      { id: "assembly", label: "Сборка", view: "assembly" },
+      { id: "assembly_order", label: "Заказ сборки", view: "disabled" },
+    ],
+  };
+  assert.equal(canShowAssemblyOrderCreate(bootstrap), true);
+  assert.equal(canShowAssemblyOrdersList(bootstrap), false);
+});
+
+test("superuser can see both assembly order actions", () => {
+  const bootstrap = {
+    user: { is_superuser: true },
+    roles: { is_operator_role: false, is_view_only_role: false },
+    nav: [{ id: "assembly", label: "Сборка", view: "assembly" }],
+  };
+  assert.equal(canShowAssemblyOrderCreate(bootstrap), true);
+  assert.equal(canShowAssemblyOrdersList(bootstrap), true);
+});
+
+test("desktop log events redact credentials and tokens", () => {
+  const event = buildDesktopLogEvent({
+    level: "ERROR",
+    action: "api_error",
+    description: "Ошибка API",
+    details: {
+      endpoint: "mobile/sync/records/",
+      password: "secret-password",
+      nested: {
+        access_token: "secret-token",
+        payload: { amount: 200 },
+      },
+    },
+    context: { username: "operator", view: "assembly", online: true },
+    now: new Date(now),
+  });
+  assert.equal(event.level, "ERROR");
+  assert.equal(event.username, "operator");
+  assert.equal(event.details.password, "[REDACTED]");
+  assert.equal(event.details.nested.access_token, "[REDACTED]");
+  assert.equal(event.details.nested.payload.amount, 200);
+});
+
+test("desktop logger writes sync, offline and reconnect events through Tauri command", async () => {
+  const written = [];
+  const logger = createDesktopLogger({
+    invoke: async (command, args) => written.push({ command, args }),
+    getContext: () => ({ username: "operator", online: false, view: "records" }),
+    consoleTarget: { info() {}, warn() {}, error() {} },
+  });
+  await logger.info("sync_start", "Старт синхронизации", { pending_total: 2, sync_uuid: "abc" });
+  await logger.warning("network_offline", "Интернет пропал", { endpoint: "/api/health/" });
+  await logger.info("network_reconnect", "Интернет появился", { retry_attempt: 1 });
+
+  assert.equal(written.length, 3);
+  assert.equal(written[0].command, "append_desktop_log");
+  assert.equal(written[0].args.event.action, "sync_start");
+  assert.equal(written[1].args.event.action, "network_offline");
+  assert.equal(written[2].args.event.action, "network_reconnect");
+});
+
+test("error logs include endpoint and reason without leaking authorization", () => {
+  const details = redactSensitive({
+    endpoint: "mobile/assembly/",
+    status: 500,
+    reason: "status code 500",
+    headers: { Authorization: "Bearer secret" },
+    payload: { sync_uuid: "uuid-1", amount: 200 },
+  });
+  assert.equal(details.endpoint, "mobile/assembly/");
+  assert.equal(details.status, 500);
+  assert.equal(details.reason, "status code 500");
+  assert.equal(details.headers.Authorization, "[REDACTED]");
+  assert.equal(details.payload.sync_uuid, "uuid-1");
+});
+
+test("updater messages explain available, latest and missing manifest states", () => {
+  assert.equal(UPDATE_MANIFEST_URL, "https://github.com/velo95moto/velo95moto_win/releases/latest/download/latest.json");
+  assert.equal(
+    updateCheckMessage({ available: true, version: "0.1.16" }),
+    "Доступна новая версия программы v0.1.16.",
+  );
+  assert.equal(
+    updateCheckMessage({ available: false, current_version: "0.1.15" }),
+    "Установлена последняя версия v0.1.15.",
+  );
+  assert.equal(
+    updateErrorMessage("404 Not Found"),
+    "Не удалось проверить обновления: манифест latest.json не найден в GitHub Releases.",
+  );
+});
 
 test("local changes without internet show offline and keep button context", () => {
   assert.equal(getSyncStatusMessage({

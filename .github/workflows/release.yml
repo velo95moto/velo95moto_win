@@ -32,7 +32,7 @@ jobs:
         run: npm install
 
       - name: Build Tauri app
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -43,4 +43,4 @@ jobs:
           releaseBody: 'Новая версия приложения Velo95Moto'
           releaseDraft: false
           prerelease: false
-          updaterJsonKeepUniversal: true
+          updaterJsonPreferNsis: true

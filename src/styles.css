@@ -63,6 +63,7 @@ button { cursor: pointer; border: 0; }
 .brand-line {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 12px;
   margin-bottom: 4px;
 }
@@ -201,7 +202,8 @@ button { cursor: pointer; border: 0; }
 }
 
 .nav-dropdown:hover .nav-dropdown-menu,
-.nav-dropdown:focus-within .nav-dropdown-menu {
+.nav-dropdown:focus-within .nav-dropdown-menu,
+.nav-dropdown.is-open .nav-dropdown-menu {
   display: block;
 }
 
@@ -4543,6 +4545,10 @@ td { background: rgba(255,255,255,0.78); }
   border: none;
   cursor: pointer;
   transition: opacity 0.15s;
+}
+.update-banner__btn--secondary {
+  background: rgba(255, 255, 255, 0.13);
+  border: 1px solid rgba(255, 255, 255, 0.22);
 }
 .update-banner__btn:disabled { opacity: 0.6; cursor: wait; }
 .update-banner__btn:hover:not(:disabled) { opacity: 0.88; }
