@@ -159,10 +159,10 @@ test("whatsapp phone is normalized for Windows protocol links", () => {
   assert.equal(normalizeWhatsAppPhone("12345"), "");
 });
 
-test("whatsapp web links open WhatsApp Web directly", () => {
+test("whatsapp web links open WhatsApp API chooser", () => {
   assert.equal(
     buildWhatsAppWebUrl("+7 (928) 001-29-09", "Добрый день!"),
-    "https://web.whatsapp.com/send?phone=79280012909&text=%D0%94%D0%BE%D0%B1%D1%80%D1%8B%D0%B9%20%D0%B4%D0%B5%D0%BD%D1%8C!",
+    "https://api.whatsapp.com/send/?phone=79280012909&text=%D0%94%D0%BE%D0%B1%D1%80%D1%8B%D0%B9%20%D0%B4%D0%B5%D0%BD%D1%8C!",
   );
   assert.equal(
     buildWhatsAppDesktopUrl("+7 (928) 001-29-09", "Добрый день!"),

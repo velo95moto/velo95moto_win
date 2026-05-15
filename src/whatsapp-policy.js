@@ -6,7 +6,7 @@ export function normalizeWhatsAppPhone(phone) {
 export function buildWhatsAppWebUrl(phone, message) {
   const normalizedPhone = normalizeWhatsAppPhone(phone);
   if (!normalizedPhone) return "";
-  return `https://web.whatsapp.com/send?phone=${normalizedPhone}&text=${encodeURIComponent(String(message || ""))}`;
+  return `https://api.whatsapp.com/send/?phone=${normalizedPhone}&text=${encodeURIComponent(String(message || ""))}`;
 }
 
 export function buildWhatsAppDesktopUrl(phone, message) {
