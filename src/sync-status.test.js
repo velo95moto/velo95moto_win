@@ -29,6 +29,10 @@ import {
   updateCheckMessage,
   updateErrorMessage,
 } from "./updater-policy.js";
+import {
+  normalizeWhatsAppPhone,
+  shouldDisableClientContact,
+} from "./whatsapp-policy.js";
 
 const now = Date.parse("2026-05-13T13:00:00Z");
 
@@ -144,6 +148,19 @@ test("updater messages explain available, latest and missing manifest states", (
     updateErrorMessage("update check timeout after 3500ms"),
     "Не удалось проверить обновления: сервер обновлений отвечает слишком долго.",
   );
+});
+
+test("whatsapp phone is normalized for Windows protocol links", () => {
+  assert.equal(normalizeWhatsAppPhone("+7 (928) 123-45-67"), "79281234567");
+  assert.equal(normalizeWhatsAppPhone("8 928 123 45 67"), "79281234567");
+  assert.equal(normalizeWhatsAppPhone("9281234567"), "79281234567");
+  assert.equal(normalizeWhatsAppPhone("12345"), "");
+});
+
+test("collected records disable client phone actions", () => {
+  assert.equal(shouldDisableClientContact({ phone: "+7 928 123-45-67", collected: false }), false);
+  assert.equal(shouldDisableClientContact({ phone: "+7 928 123-45-67", collected: true }), true);
+  assert.equal(shouldDisableClientContact({ phone: "12345", collected: false }), true);
 });
 
 test("local changes without internet show offline and keep button context", () => {

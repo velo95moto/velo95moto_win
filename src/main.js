@@ -21,6 +21,10 @@ import {
   updateCheckMessage,
   updateErrorMessage,
 } from "./updater-policy.js";
+import {
+  normalizeWhatsAppPhone,
+  shouldDisableClientContact,
+} from "./whatsapp-policy.js";
 
 const { invoke } = window.__TAURI__.core;
 let updateCheckInProgress = false;
@@ -1119,6 +1123,8 @@ function buildRecordActions(record) {
   const id = recordStableId(record);
   const notificationCount = Number(record.notification_count || 0);
   const tooltip = record.notification_tooltip || "Клиент не уведомлен";
+  const notifyDisabled = Boolean(record.collected);
+  const notifyTitle = notifyDisabled ? "Недоступно после выдачи" : tooltip;
   const collectedText = record.collected
     ? `Забрал ${formatDate(record.collected_date)}`
     : "Забрал";
@@ -1126,13 +1132,24 @@ function buildRecordActions(record) {
     <div class="table-actions">
       <button type="button" class="btn-action btn-action-icon view-details" data-id="${id}" title="Подробнее"><svg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'><path fill='currentColor' d='M13.586 2A2 2 0 0 1 15 2.586L19.414 7A2 2 0 0 1 20 8.414V20a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2ZM12 4H6v16h12V10h-4.5A1.5 1.5 0 0 1 12 8.5zm0 8a3 3 0 0 1 2.708 4.293l.706.707A1 1 0 1 1 14 18.414l-.707-.706A3 3 0 1 1 12 12m0 2a1 1 0 1 0 0 2 1 1 0 0 0 0-2m2-9.586V8h3.586z'/></svg></button>
       <button type="button" class="btn-action btn-action-icon edit-record" data-id="${id}" title="Изменить"><svg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'><path fill='currentColor' d='M5 2a2 2 0 0 0-2 2v15a2 2 0 0 0 2 2h3v-2H5V4h12v4h2V4a2 2 0 0 0-2-2zm3 5a1 1 0 0 0 0 2h4a1 1 0 1 0 0-2zm7.949 3.811a3 3 0 0 1 4.242 4.243l-5.656 5.657a1 1 0 0 1-.707.293h-2.829a1 1 0 0 1-1-1v-2.829a1 1 0 0 1 .293-.707zm2.828 1.414a1 1 0 0 0-1.414 0l1.414 1.415a1 1 0 0 0 0-1.415m-1.414 2.829-1.414-1.414-3.95 3.95v1.414h1.414z'/></svg></button>
-      <button type="button" class="btn-action btn-action-icon notify-client-btn ${notificationCount > 0 || record.client_notified ? "is-notified" : "is-pending"}" data-id="${id}" data-notification-tooltip="${escapeHtml(tooltip)}" aria-label="${escapeHtml(tooltip)}">
+      <button type="button" class="btn-action btn-action-icon notify-client-btn ${notificationCount > 0 || record.client_notified ? "is-notified" : "is-pending"} ${notifyDisabled ? "is-disabled" : ""}" data-id="${id}" data-notification-tooltip="${escapeHtml(notifyTitle)}" aria-label="${escapeHtml(notifyTitle)}" title="${escapeHtml(notifyTitle)}" ${notifyDisabled ? "disabled aria-disabled=\"true\"" : ""}>
         <span class="notify-client-btn__bell">🔔</span>
         <span class="notify-client-btn__count ${notificationCount <= 0 ? "is-empty" : ""}">${notificationCount > 0 ? notificationCount : ""}</span>
       </button>
       <button type="button" class="btn-action btn-action-main ${record.collected ? "btn-collected" : "btn-collect"}" data-id="${id}" ${record.collected ? "disabled" : ""}>${collectedText}</button>
     </div>
   `;
+}
+
+function buildRecordPhoneCell(record) {
+  const id = recordStableId(record);
+  const phone = normalizeWhatsAppPhone(record.phone);
+  const label = formatPhone(record.phone);
+  if (shouldDisableClientContact(record)) {
+    const title = record.collected ? "Недоступно после выдачи" : "Некорректный номер телефона";
+    return `<span class="record-phone-link record-phone-link--disabled" aria-disabled="true" title="${escapeHtml(title)}">${escapeHtml(label)}</span>`;
+  }
+  return `<a href="#" class="record-phone-link whatsapp-link" data-id="${id}" data-phone="${phone}" data-amount="${Number(record.total_amount || 0)}">${escapeHtml(label)}</a>`;
 }
 
 function renderRecordRows(targetBody, records, startIndex = 0) {
@@ -1149,7 +1166,7 @@ function renderRecordRows(targetBody, records, startIndex = 0) {
       <td>${startIndex + index + 1}</td>
       <td>${formatDate(record.record_date)}</td>
       <td class="text-truncate">${escapeHtml(record.title || "—")}</td>
-      <td class="cell-nowrap"><a href="#" class="record-phone-link whatsapp-link" data-id="${id}" data-phone="7${String(record.phone || "").replace(/\D/g, "").slice(-10)}" data-amount="${Number(record.total_amount || 0)}">${formatPhone(record.phone)}</a></td>
+      <td class="cell-nowrap">${buildRecordPhoneCell(record)}</td>
       <td class="record-total-amount">${formatPaymentAmount(record.total_amount)}</td>
       <td>${escapeHtml(record.master || "—")}</td>
       <td>${buildRecordActions(record)}</td>
@@ -1213,8 +1230,9 @@ async function handleRecordTableClick(event) {
 
   const notifyButton = event.target.closest(".notify-client-btn");
   if (notifyButton) {
+    if (notifyButton.disabled || notifyButton.classList.contains("is-disabled")) return;
     const record = state.records.find((item) => recordStableId(item) === notifyButton.dataset.id);
-    if (record) await notifyClient(record, "call");
+    if (record && !record.collected) await notifyClient(record, "call");
     return;
   }
 
@@ -1222,9 +1240,9 @@ async function handleRecordTableClick(event) {
   if (phoneLink) {
     event.preventDefault();
     const record = state.records.find((item) => recordStableId(item) === phoneLink.dataset.id);
-    if (!record) return;
-    window.__TAURI__.opener.openUrl(buildWhatsAppUrl(record));
-    notifyClient(record, "whatsapp");
+    if (!record || record.collected) return;
+    const opened = await openWhatsAppForRecord(record);
+    if (opened) await notifyClient(record, "whatsapp");
     return;
   }
 
@@ -1285,18 +1303,87 @@ function showRecordDetails(record) {
   recordDetailsModal.showModal();
 }
 
-function buildWhatsAppUrl(record) {
+function buildWhatsAppMessage(record) {
   const amount = Number(record.total_amount || 0);
   const paymentText = amount <= 0 ? "По гарантии" : `${formatMoney(amount)} руб.`;
-  const message = `Ассаламу 1алайкум! Добрый день!
+  return `Ассаламу 1алайкум! Добрый день!
 Ремонт Вашей техники завершён.
 Сумма к оплате: ${paymentText}
 Можете забирать в любое удобное время.
 
 Рабочее время магазина: с 9:00 до 19:00, без выходных.
 Контактный номер: +7 989 908-97-42`;
-  const phone = `7${String(record.phone || "").replace(/\D/g, "").slice(-10)}`;
+}
+
+function buildWhatsAppUrl(record) {
+  const phone = normalizeWhatsAppPhone(record.phone);
+  const message = buildWhatsAppMessage(record);
   return `https://wa.me/${phone}?text=${encodeURIComponent(message)}`;
+}
+
+function buildWhatsAppDesktopUrl(record) {
+  const phone = normalizeWhatsAppPhone(record.phone);
+  const message = buildWhatsAppMessage(record);
+  return `whatsapp://send?phone=${phone}&text=${encodeURIComponent(message)}`;
+}
+
+function isWindowsPlatform() {
+  const uaPlatform = navigator.userAgentData?.platform || navigator.platform || "";
+  return /win/i.test(uaPlatform) || /windows/i.test(navigator.userAgent || "");
+}
+
+async function openWhatsAppForRecord(record) {
+  const phone = normalizeWhatsAppPhone(record.phone);
+  if (!phone) {
+    setStatus("Некорректный номер телефона для WhatsApp.");
+    return false;
+  }
+  if (record.collected) return false;
+
+  const webUrl = buildWhatsAppUrl(record);
+  if (!isWindowsPlatform()) {
+    await window.__TAURI__.opener.openUrl(webUrl);
+    auditInfo("whatsapp_open_web", "Открыт WhatsApp Web для клиента.", {
+      record_key: recordStableId(record),
+      phone,
+    });
+    return true;
+  }
+
+  const desktopUrl = buildWhatsAppDesktopUrl(record);
+  try {
+    await window.__TAURI__.opener.openUrl(desktopUrl);
+    auditInfo("whatsapp_open_desktop_attempt", "Попытка открыть WhatsApp Desktop через protocol handler.", {
+      record_key: recordStableId(record),
+      phone,
+    });
+    window.setTimeout(() => {
+      if (!document.hasFocus()) return;
+      window.__TAURI__.opener.openUrl(webUrl)
+        .then(() => auditInfo("whatsapp_open_web_fallback", "Открыт WhatsApp Web после неудачной попытки WhatsApp Desktop.", {
+          record_key: recordStableId(record),
+          phone,
+        }))
+        .catch((error) => auditError("whatsapp_open_web_fallback_failed", "Не удалось открыть WhatsApp Web fallback.", {
+          record_key: recordStableId(record),
+          phone,
+          error: String(error),
+        }));
+    }, 1200);
+    return true;
+  } catch (error) {
+    auditWarning("whatsapp_open_desktop_failed", "WhatsApp Desktop не открылся, пробуем WhatsApp Web.", {
+      record_key: recordStableId(record),
+      phone,
+      error: String(error),
+    });
+    await window.__TAURI__.opener.openUrl(webUrl);
+    auditInfo("whatsapp_open_web_fallback", "Открыт WhatsApp Web fallback.", {
+      record_key: recordStableId(record),
+      phone,
+    });
+    return true;
+  }
 }
 
 async function notifyClient(record, method = "call") {
@@ -2730,7 +2817,7 @@ function renderSalaryRecords(records) {
                   <td>${index + 1}</td>
                   <td>${formatDate(record.record_date)}</td>
                   <td class="text-truncate">${escapeHtml(record.title || "—")}</td>
-                  <td>${formatPhone(record.phone)}</td>
+                  <td class="cell-nowrap">${buildRecordPhoneCell(record)}</td>
                   <td class="record-total-amount">${formatPaymentAmount(record.total_amount)}</td>
                   <td>${escapeHtml(record.master || "—")}</td>
                   <td>
@@ -4164,6 +4251,16 @@ window.addEventListener("DOMContentLoaded", async () => {
       return;
     }
 
+    const phoneLink = event.target.closest(".whatsapp-link");
+    if (phoneLink) {
+      event.preventDefault();
+      const record = state.salaryRecords.find((item) => recordStableId(item) === phoneLink.dataset.id);
+      if (!record || record.collected) return;
+      const opened = await openWhatsAppForRecord(record);
+      if (opened) await notifyClient(record, "whatsapp");
+      return;
+    }
+
     const collectButton = event.target.closest(".salary-collect-record");
     if (collectButton) {
       try {
@@ -4310,6 +4407,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   document.addEventListener("mouseover", (event) => {
     const btn = event.target.closest(".notify-client-btn");
     if (!btn) return;
+    if (btn.disabled || btn.classList.contains("is-disabled")) return;
     if (btn.contains(event.relatedTarget)) return;
     const text = btn.dataset.notificationTooltip || "Клиент не уведомлен";
     notifyTooltipEl.textContent = text;

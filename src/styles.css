@@ -589,6 +589,23 @@ h2 { font-size: 20px; font-weight: 900; }
   text-decoration: none;
 }
 
+.record-phone-link:hover,
+.record-phone-link:focus {
+  border-color: #b9dcc6;
+  background: #f2fbf5;
+  color: #1f5138;
+}
+
+.record-phone-link--disabled,
+.record-phone-link--disabled:hover,
+.record-phone-link--disabled:focus {
+  color: #94a3b8;
+  border-color: #e2e8f0;
+  background: #f1f5f9;
+  cursor: not-allowed;
+  opacity: 0.74;
+}
+
 .record-total-amount {
   font-weight: 800;
 }
@@ -612,6 +629,10 @@ h2 { font-size: 20px; font-weight: 900; }
   color: #09244b;
   background: #fff;
   font-weight: 900;
+}
+
+.btn-action:disabled {
+  cursor: not-allowed;
 }
 
 .btn-action-icon {
@@ -679,6 +700,20 @@ h2 { font-size: 20px; font-weight: 900; }
 .notify-client-btn.is-notified {
   color: #fff;
   background: linear-gradient(135deg, #48a66d, #2f855a);
+}
+
+.notify-client-btn.is-disabled,
+.notify-client-btn:disabled,
+.notify-client-btn.is-disabled:hover,
+.notify-client-btn:disabled:hover,
+.notify-client-btn.is-disabled:focus,
+.notify-client-btn:disabled:focus {
+  color: #94a3b8;
+  background: #eef2f7;
+  border-color: #e2e8f0;
+  box-shadow: none;
+  cursor: not-allowed;
+  opacity: 0.72;
 }
 
 .notify-client-btn__count {
