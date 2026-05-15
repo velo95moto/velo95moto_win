@@ -14,10 +14,14 @@ export function updateCheckMessage(result = {}) {
 export function updateErrorMessage(error) {
   const text = String(error || "").trim();
   if (!text) return "Не удалось проверить обновления.";
+  const lower = text.toLowerCase();
+  if (lower.includes("valid release json") || lower.includes("release json")) {
+    return "Не удалось проверить обновления: файл latest.json недоступен публично. Проверьте, что релиз или сервер обновлений открыт для программы.";
+  }
   if (text.includes("404") || text.toLowerCase().includes("not found")) {
     return "Не удалось проверить обновления: манифест latest.json не найден в GitHub Releases.";
   }
-  if (text.toLowerCase().includes("signature") || text.toLowerCase().includes("sign")) {
+  if (lower.includes("signature") || lower.includes("sign")) {
     return "Не удалось проверить обновления: ошибка подписи обновления.";
   }
   return `Не удалось проверить обновления: ${text}`;

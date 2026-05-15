@@ -4518,46 +4518,86 @@ td { background: rgba(255,255,255,0.78); }
 /* Баннер обновления */
 .update-banner {
   position: fixed;
-  bottom: 24px;
-  right: 24px;
+  right: max(24px, env(safe-area-inset-right));
+  bottom: max(24px, env(safe-area-inset-bottom));
   z-index: 9000;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 12px 16px;
-  border-radius: 16px;
-  background: linear-gradient(135deg, rgba(26, 32, 42, 0.96), rgba(52, 62, 74, 0.94));
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  box-shadow: 0 18px 44px rgba(15, 23, 42, 0.32);
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr) 28px;
+  align-items: start;
+  gap: 14px;
+  width: min(420px, calc(100vw - 48px));
+  padding: 16px;
+  border-radius: 14px;
+  background: rgba(31, 39, 50, 0.97);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow: 0 22px 52px rgba(15, 23, 42, 0.36), 0 2px 8px rgba(15, 23, 42, 0.24);
   color: #fff;
-  font-size: 0.88rem;
-  max-width: 380px;
+  font-size: 0.92rem;
+  overflow: hidden;
 }
-.update-banner__text { flex: 1; line-height: 1.4; }
+.update-banner__icon {
+  width: 42px;
+  height: 42px;
+  border-radius: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, #d8783a, #b9551d);
+  color: #fff;
+  font-size: 1.35rem;
+  font-weight: 900;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.24);
+}
+.update-banner__content { min-width: 0; }
+.update-banner__title {
+  margin: 1px 0 3px;
+  color: #fff;
+  font-size: 1rem;
+  font-weight: 900;
+  line-height: 1.2;
+}
+.update-banner__text {
+  color: rgba(255, 255, 255, 0.78);
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+.update-banner__text strong {
+  color: #fff;
+  font-weight: 900;
+}
+.update-banner__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 13px;
+}
 .update-banner__btn {
-  flex-shrink: 0;
-  padding: 7px 16px;
-  border-radius: 999px;
+  min-height: 36px;
+  padding: 8px 15px;
+  border-radius: 10px;
   background: linear-gradient(135deg, #d86b2d, #b94f16);
   color: #fff;
   font-weight: 700;
   font-size: 0.84rem;
   border: none;
   cursor: pointer;
-  transition: opacity 0.15s;
+  white-space: nowrap;
+  transition: transform 0.15s, opacity 0.15s, background 0.15s;
 }
 .update-banner__btn--secondary {
-  background: rgba(255, 255, 255, 0.13);
-  border: 1px solid rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.2);
 }
 .update-banner__btn:disabled { opacity: 0.6; cursor: wait; }
-.update-banner__btn:hover:not(:disabled) { opacity: 0.88; }
+.update-banner__btn:hover:not(:disabled) {
+  opacity: 0.92;
+  transform: translateY(-1px);
+}
 .update-banner__close {
-  flex-shrink: 0;
   width: 28px;
   height: 28px;
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.08);
   color: rgba(255, 255, 255, 0.7);
   font-size: 1.1rem;
   line-height: 1;
@@ -4569,6 +4609,27 @@ td { background: rgba(255,255,255,0.78); }
   transition: background 0.15s;
 }
 .update-banner__close:hover { background: rgba(255, 255, 255, 0.2); color: #fff; }
+
+@media (max-width: 560px) {
+  .update-banner {
+    left: 16px;
+    right: 16px;
+    bottom: 16px;
+    width: auto;
+    grid-template-columns: 38px minmax(0, 1fr) 28px;
+  }
+  .update-banner__icon {
+    width: 38px;
+    height: 38px;
+  }
+  .update-banner__actions {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+  .update-banner__btn {
+    width: 100%;
+  }
+}
 
 /* Бейдж на кнопке навбара */
 .nav-live-badge {

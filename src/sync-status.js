@@ -1,4 +1,5 @@
 export const LONG_UNSYNCED_MS = 30 * 60 * 1000;
+export const AUTO_SYNC_INTERVAL_MS = 3 * 60 * 1000;
 export const OFFLINE_RETRY_DELAYS_MS = [5_000, 15_000, 30_000, 60_000];
 export const ONLINE_RETRY_DELAY_MS = 120_000;
 

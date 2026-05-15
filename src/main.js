@@ -1,4 +1,5 @@
 import {
+  AUTO_SYNC_INTERVAL_MS,
   getSyncStatusMessage,
   nextReconnectDelayMs,
   offlineSyncMessage,
@@ -23,6 +24,7 @@ import {
 } from "./updater-policy.js";
 
 const { invoke } = window.__TAURI__.core;
+let updateCheckInProgress = false;
 
 const DEFAULT_SERVER_URL = "https://velo95moto.ru";
 const DATA_PROFILE = "localhost-dev-v1";
@@ -3149,7 +3151,7 @@ const SyncService = (() => {
   let _lastSyncAt = null;
   let _error = null;
   let _offline = false;
-  const INTERVAL = 60_000;
+  const INTERVAL = AUTO_SYNC_INTERVAL_MS;
 
   function _el() { return document.getElementById("sync-indicator"); }
 
@@ -3206,18 +3208,18 @@ const SyncService = (() => {
     }
     _offline = false;
     await refreshPendingSyncSummary();
-    if (!shouldAttemptBackgroundSync({
+    const hasPendingSync = shouldAttemptBackgroundSync({
       online: state.network.online,
       syncInProgress: state.network.syncInProgress,
       pendingTotal: state.pendingTotal,
-    })) {
-      if (state.syncUiStatus !== "error") _error = null;
-      _renderIndicator();
-      return;
-    }
+    });
     _renderIndicator();
     try {
-      const ok = await syncNow("", { reason: "auto", background: true });
+      const ok = await syncNow("", {
+        reason: hasPendingSync ? "auto" : "auto-periodic",
+        background: true,
+        periodic: !hasPendingSync,
+      });
       if (ok) {
         _lastSyncAt = new Date();
         _error = null;
@@ -3387,6 +3389,11 @@ const AssemblyOrderPoller = (() => {
 })();
 
 async function checkForUpdate({ manual = false } = {}) {
+  if (updateCheckInProgress) {
+    if (manual) showToast("Проверка обновлений уже выполняется.");
+    return { available: false, in_progress: true };
+  }
+  updateCheckInProgress = true;
   const started = performance.now();
   auditInfo("update_check_start", manual ? "Ручная проверка обновлений запущена." : "Авто-проверка обновлений запущена.", {
     manifest_url: UPDATE_MANIFEST_URL,
@@ -3407,7 +3414,6 @@ async function checkForUpdate({ manual = false } = {}) {
       return result;
     }
     showUpdateBanner(result.version, result.notes, result);
-    if (manual) showToast(updateCheckMessage(result));
     return result;
   } catch (e) {
     const message = updateErrorMessage(e);
@@ -3423,6 +3429,8 @@ async function checkForUpdate({ manual = false } = {}) {
       setStatus(message, true);
     }
     return { available: false, error: String(e) };
+  } finally {
+    updateCheckInProgress = false;
   }
 }
 
@@ -3433,11 +3441,17 @@ function showUpdateBanner(version, notes, result = {}) {
   banner.id = "update-banner";
   banner.className = "update-banner";
   banner.innerHTML = `
-    <span class="update-banner__text">
-      Доступна новая версия программы <strong>v${escapeHtml(version)}</strong>
-    </span>
-    <button class="update-banner__btn" id="update-apply-btn" type="button">Скачать и установить</button>
-    <button class="update-banner__btn update-banner__btn--secondary" id="update-release-btn" type="button">Скачать вручную</button>
+    <div class="update-banner__icon" aria-hidden="true">↗</div>
+    <div class="update-banner__content">
+      <div class="update-banner__title">Доступно обновление</div>
+      <div class="update-banner__text">
+        Новая версия <strong>v${escapeHtml(version)}</strong> готова к установке.
+      </div>
+      <div class="update-banner__actions">
+        <button class="update-banner__btn" id="update-apply-btn" type="button">Установить</button>
+        <button class="update-banner__btn update-banner__btn--secondary" id="update-release-btn" type="button">Скачать вручную</button>
+      </div>
+    </div>
     <button class="update-banner__close" id="update-dismiss-btn" type="button" aria-label="Позже">×</button>
   `;
   document.body.append(banner);
@@ -3462,7 +3476,7 @@ function showUpdateBanner(version, notes, result = {}) {
       });
       showToast(message, true);
       setStatus(message, true);
-      if (btn) { btn.disabled = false; btn.textContent = "Скачать и установить"; }
+      if (btn) { btn.disabled = false; btn.textContent = "Установить"; }
     }
   });
   document.getElementById("update-release-btn").addEventListener("click", () => {

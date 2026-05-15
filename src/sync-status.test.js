@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  AUTO_SYNC_INTERVAL_MS,
   LONG_UNSYNCED_MS,
   nextReconnectDelayMs,
   OFFLINE_RETRY_DELAYS_MS,
@@ -134,6 +135,10 @@ test("updater messages explain available, latest and missing manifest states", (
   assert.equal(
     updateErrorMessage("404 Not Found"),
     "Не удалось проверить обновления: манифест latest.json не найден в GitHub Releases.",
+  );
+  assert.equal(
+    updateErrorMessage("Could not fetch a valid release JSON from the remote"),
+    "Не удалось проверить обновления: файл latest.json недоступен публично. Проверьте, что релиз или сервер обновлений открыт для программы.",
   );
 });
 
@@ -304,6 +309,10 @@ test("background sync waits when there are no local changes", () => {
     syncInProgress: false,
     pendingTotal: 0,
   }), false);
+});
+
+test("automatic sync interval is three minutes", () => {
+  assert.equal(AUTO_SYNC_INTERVAL_MS, 180_000);
 });
 
 test("sync button without internet fails fast before network requests", () => {
