@@ -140,6 +140,10 @@ test("updater messages explain available, latest and missing manifest states", (
     updateErrorMessage("Could not fetch a valid release JSON from the remote"),
     "Не удалось проверить обновления: файл latest.json недоступен публично. Проверьте, что релиз или сервер обновлений открыт для программы.",
   );
+  assert.equal(
+    updateErrorMessage("update check timeout after 3500ms"),
+    "Не удалось проверить обновления: сервер обновлений отвечает слишком долго.",
+  );
 });
 
 test("local changes without internet show offline and keep button context", () => {

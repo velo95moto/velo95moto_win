@@ -17,7 +17,6 @@ import {
 } from "./nav-policy.js";
 import { createDesktopLogger } from "./desktop-logger.js";
 import {
-  RELEASES_URL,
   UPDATE_MANIFEST_URL,
   updateCheckMessage,
   updateErrorMessage,
@@ -25,10 +24,12 @@ import {
 
 const { invoke } = window.__TAURI__.core;
 let updateCheckInProgress = false;
+let startupUpdateCheckStarted = false;
 
 const DEFAULT_SERVER_URL = "https://velo95moto.ru";
 const DATA_PROFILE = "localhost-dev-v1";
 const PRODUCTION_SERVER_URL = "https://velo95moto.ru";
+const UPDATE_CHECK_TIMEOUT_MS = 3500;
 
 const loginScreen = document.querySelector("#login-screen");
 const appShell = document.querySelector("#app-shell");
@@ -421,6 +422,15 @@ function isNetworkErrorText(error) {
     "недоступ",
     "интернет",
   ].some((needle) => text.includes(needle));
+}
+
+function withTimeout(promise, timeoutMs, label = "operation") {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      window.setTimeout(() => reject(new Error(`${label} timeout after ${timeoutMs}ms`)), timeoutMs);
+    }),
+  ]);
 }
 
 async function runHealthCheck(source = "startup", timeoutMs = 1500) {
@@ -3452,6 +3462,15 @@ const AssemblyOrderPoller = (() => {
 })();
 
 async function checkForUpdate({ manual = false } = {}) {
+  if (!manual && (!state.network.online || shouldFastFailNetworkRequest())) {
+    auditInfo("update_check_skipped_offline", "Проверка обновлений пропущена: нет интернета.", {
+      manifest_url: UPDATE_MANIFEST_URL,
+      manual,
+      online: state.network.online,
+      browser_online: browserIsOnline(),
+    });
+    return { available: false, skipped: "offline" };
+  }
   if (updateCheckInProgress) {
     if (manual) showToast("Проверка обновлений уже выполняется.");
     return { available: false, in_progress: true };
@@ -3463,12 +3482,17 @@ async function checkForUpdate({ manual = false } = {}) {
     manual,
   });
   try {
-    const result = await invoke("check_for_update");
+    const result = await withTimeout(
+      invoke("check_for_update"),
+      UPDATE_CHECK_TIMEOUT_MS,
+      "update check",
+    );
     auditInfo("update_check_result", result?.available ? "Найдена новая версия программы." : "Новая версия программы не найдена.", {
       manifest_url: result?.manifest_url || UPDATE_MANIFEST_URL,
       current_version: result?.current_version,
       latest_version: result?.version,
       available: Boolean(result?.available),
+      timeout_ms: UPDATE_CHECK_TIMEOUT_MS,
       duration_ms: Math.round(performance.now() - started),
       manual,
     });
@@ -3483,6 +3507,7 @@ async function checkForUpdate({ manual = false } = {}) {
     auditError("update_check_failed", "Ошибка проверки обновлений.", {
       manifest_url: UPDATE_MANIFEST_URL,
       error: String(e),
+      timeout_ms: UPDATE_CHECK_TIMEOUT_MS,
       duration_ms: Math.round(performance.now() - started),
       manual,
     });
@@ -3495,6 +3520,22 @@ async function checkForUpdate({ manual = false } = {}) {
   } finally {
     updateCheckInProgress = false;
   }
+}
+
+function scheduleStartupUpdateCheck(source = "startup") {
+  if (startupUpdateCheckStarted) return;
+  startupUpdateCheckStarted = true;
+  window.setTimeout(async () => {
+    if (!state.network.online || shouldFastFailNetworkRequest()) {
+      auditInfo("update_check_skipped_offline", "Стартовая проверка обновлений пропущена: нет интернета.", {
+        source,
+        online: state.network.online,
+        browser_online: browserIsOnline(),
+      });
+      return;
+    }
+    await checkForUpdate({ manual: false });
+  }, 0);
 }
 
 function showUpdateBanner(version, notes, result = {}) {
@@ -3511,8 +3552,8 @@ function showUpdateBanner(version, notes, result = {}) {
         Новая версия <strong>v${escapeHtml(version)}</strong> готова к установке.
       </div>
       <div class="update-banner__actions">
-        <button class="update-banner__btn" id="update-apply-btn" type="button">Установить</button>
-        <button class="update-banner__btn update-banner__btn--secondary" id="update-release-btn" type="button">Скачать вручную</button>
+        <button class="update-banner__btn" id="update-apply-btn" type="button">Обновить</button>
+        <button class="update-banner__btn update-banner__btn--secondary" id="update-dismiss-action-btn" type="button">Позже</button>
       </div>
     </div>
     <button class="update-banner__close" id="update-dismiss-btn" type="button" aria-label="Позже">×</button>
@@ -3539,16 +3580,10 @@ function showUpdateBanner(version, notes, result = {}) {
       });
       showToast(message, true);
       setStatus(message, true);
-      if (btn) { btn.disabled = false; btn.textContent = "Установить"; }
+      if (btn) { btn.disabled = false; btn.textContent = "Обновить"; }
     }
   });
-  document.getElementById("update-release-btn").addEventListener("click", () => {
-    auditInfo("update_manual_download_opened", "Пользователь открыл страницу релиза для ручной установки.", {
-      releases_url: RELEASES_URL,
-      latest_version: version,
-    });
-    window.__TAURI__.opener.openUrl(RELEASES_URL);
-  });
+  document.getElementById("update-dismiss-action-btn").addEventListener("click", () => banner.remove());
   document.getElementById("update-dismiss-btn").addEventListener("click", () => banner.remove());
 }
 
@@ -3693,6 +3728,7 @@ async function startOfflineFirstStartup() {
     } else {
       loginStatus.textContent = "Сервер доступен. Введите пароль, чтобы открыть программу.";
       scheduleReconnectWorker(nextReconnectDelayMs({ online: true }));
+      scheduleStartupUpdateCheck("startup-online");
     }
   });
 }
@@ -3735,7 +3771,6 @@ async function login(event) {
     SyncService.start();
     scheduleReconnectWorker(nextReconnectDelayMs({ online: state.network.online, attempts: 0 }));
     maybePromptTouchId();
-    checkForUpdate();
     if (state.bootstrap?.roles?.is_operator_role) AssemblyOrderPoller.start();
     return;
   }
@@ -3770,7 +3805,7 @@ async function login(event) {
     SyncService.start();
     scheduleReconnectWorker(nextReconnectDelayMs({ online: true }));
     maybePromptTouchId();
-    checkForUpdate();
+    scheduleStartupUpdateCheck("login-online");
     if (state.bootstrap?.roles?.is_operator_role) AssemblyOrderPoller.start();
   } catch (error) {
     console.error(error);

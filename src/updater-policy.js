@@ -15,6 +15,9 @@ export function updateErrorMessage(error) {
   const text = String(error || "").trim();
   if (!text) return "Не удалось проверить обновления.";
   const lower = text.toLowerCase();
+  if (lower.includes("timeout") || lower.includes("timed out")) {
+    return "Не удалось проверить обновления: сервер обновлений отвечает слишком долго.";
+  }
   if (lower.includes("valid release json") || lower.includes("release json")) {
     return "Не удалось проверить обновления: файл latest.json недоступен публично. Проверьте, что релиз или сервер обновлений открыт для программы.";
   }
