@@ -1502,8 +1502,9 @@ fn fetch_token(settings: &SyncSettings) -> Result<String, String> {
 
 fn pull_agent() -> ureq::Agent {
     ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_secs(5))
-        .timeout_read(Duration::from_secs(8))
+        .timeout_connect(Duration::from_millis(1200))
+        .timeout_read(Duration::from_secs(4))
+        .timeout(Duration::from_secs(6))
         .build()
 }
 
@@ -1527,13 +1528,14 @@ fn fetch_bootstrap_with_agent(
 
 #[tauri::command]
 fn health_check(server_url: String, timeout_ms: Option<u64>) -> Result<serde_json::Value, String> {
-    let timeout = Duration::from_millis(timeout_ms.unwrap_or(1500).clamp(500, 2000));
+    let timeout = Duration::from_millis(timeout_ms.unwrap_or(1000).clamp(400, 1200));
     let server_url = normalize_server_url(&server_url);
     let url = format!("{}/api/health/", server_url);
     let started = Instant::now();
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(timeout)
         .timeout_read(timeout)
+        .timeout(timeout)
         .build();
 
     let result = agent.get(&url).call();
@@ -2992,8 +2994,9 @@ fn api_request(
     let auth = format!("Bearer {token}");
 
     let agent = ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_secs(3))
-        .timeout_read(Duration::from_secs(8))
+        .timeout_connect(Duration::from_millis(1200))
+        .timeout_read(Duration::from_secs(4))
+        .timeout(Duration::from_secs(6))
         .build();
 
     let request_result = match method.to_uppercase().as_str() {

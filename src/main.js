@@ -201,6 +201,8 @@ const state = {
     syncInProgress: false,
     manualSyncInProgress: false,
     lastHealth: null,
+    lastOfflineAt: 0,
+    lastOfflineLogAt: 0,
   },
 };
 
@@ -384,12 +386,47 @@ function browserIsOnline() {
   return typeof navigator === "undefined" || navigator.onLine !== false;
 }
 
+function markNetworkOffline(source = "network", reason = "") {
+  state.network.online = false;
+  state.network.mode = "offline";
+  state.network.lastOfflineAt = Date.now();
+  setSyncUiStatus("offline", "Нет интернета");
+  if (Date.now() - Number(state.network.lastOfflineLogAt || 0) > 15_000) {
+    state.network.lastOfflineLogAt = Date.now();
+    auditWarning("network_marked_offline", "Программа переведена в офлайн-режим.", {
+      source,
+      reason,
+    });
+  }
+}
+
+function shouldFastFailNetworkRequest() {
+  if (!browserIsOnline()) return true;
+  return state.network.mode === "offline";
+}
+
+function isNetworkErrorText(error) {
+  const text = String(error || "").toLowerCase();
+  return [
+    "timeout",
+    "timed out",
+    "network",
+    "dns",
+    "offline",
+    "connection",
+    "connect",
+    "refused",
+    "reset",
+    "unreachable",
+    "недоступ",
+    "интернет",
+  ].some((needle) => text.includes(needle));
+}
+
 async function runHealthCheck(source = "startup", timeoutMs = 1500) {
   const settings = currentSettings();
   if (!settings.server_url) {
-    state.network.online = false;
-    state.network.mode = "offline";
-    setSyncUiStatus("offline", "Нет интернета");
+    markNetworkOffline(source, "missing_server_url");
     auditWarning("network_health_check", "Проверка сети пропущена: не указан сайт.", { source });
     return false;
   }
@@ -409,7 +446,7 @@ async function runHealthCheck(source = "startup", timeoutMs = 1500) {
       }
       if (typeof SyncService !== "undefined") SyncService.markOnlineDetected();
     } else {
-      setSyncUiStatus("offline", "Нет интернета");
+      markNetworkOffline(source, result.error || "health_check_offline");
     }
     const duration = result.duration_ms ?? Math.round(performance.now() - started);
     console.info(`[offline-startup] health-check source=${source} online=${state.network.online} duration_ms=${duration}`);
@@ -420,9 +457,7 @@ async function runHealthCheck(source = "startup", timeoutMs = 1500) {
     );
     return state.network.online;
   } catch (error) {
-    state.network.online = false;
-    state.network.mode = "offline";
-    setSyncUiStatus("offline", "Нет интернета");
+    markNetworkOffline(source, String(error));
     console.warn(`[offline-startup] health-check source=${source} failed`, error);
     auditError("network_health_check_failed", "Ошибка проверки сети.", {
       source,
@@ -2998,10 +3033,8 @@ async function syncPendingRecords() {
       syncInProgress: state.network.syncInProgress,
       trustBrowserOnline: false,
     })) {
-      state.network.online = false;
-      state.network.mode = "offline";
+      markNetworkOffline("manual-sync", "browser_offline");
       const message = offlineSyncMessage();
-      setSyncUiStatus("offline", "Нет интернета");
       setStatus(message, true);
       auditWarning("sync_manual_offline", "Ручная синхронизация невозможна: нет подключения к интернету.", {
         pending_total: state.pendingTotal,
@@ -3013,7 +3046,7 @@ async function syncPendingRecords() {
     const online = await runHealthCheck("manual-preflight", 700);
     if (!online) {
       const message = offlineSyncMessage();
-      setSyncUiStatus("offline", "Нет интернета");
+      markNetworkOffline("manual-sync", "preflight_failed");
       setStatus(message, true);
       auditWarning("sync_manual_offline", "Ручная синхронизация остановлена после быстрой проверки сети.", {
         pending_total: state.pendingTotal,
@@ -3057,8 +3090,33 @@ async function syncNow(successMessage = "Действие синхронизир
   updateSyncButton();
   const syncStartedAt = performance.now();
   try {
+    if (options.background) {
+      if (shouldFastFailNetworkRequest()) {
+        markNetworkOffline(options.reason || "background-sync", "fast_offline_state");
+        console.info(`[offline-startup] background sync fast-skip reason=${options.reason || "background"} mode=offline`);
+        auditWarning("sync_deferred_offline_fast", "Фоновая синхронизация быстро отложена: сеть уже считается недоступной.", {
+          reason: options.reason || "background",
+          pending_total: state.pendingTotal,
+        });
+        scheduleReconnectWorker();
+        return false;
+      }
+
+      const online = await runHealthCheck(options.reason || "background-preflight", 700);
+      if (!online) {
+        console.info(`[offline-startup] background sync preflight-failed reason=${options.reason || "background"}`);
+        auditWarning("sync_deferred_offline_preflight", "Фоновая синхронизация отложена после быстрой проверки сети.", {
+          reason: options.reason || "background",
+          duration_ms: Math.round(performance.now() - syncStartedAt),
+          pending_total: state.pendingTotal,
+        });
+        scheduleReconnectWorker();
+        return false;
+      }
+    }
+
     if (options.background && !state.network.online && !options.forceHealth) {
-      setSyncUiStatus("offline", "Нет интернета");
+      markNetworkOffline(options.reason || "background-sync", "offline_state");
       console.info(`[offline-startup] background sync skipped reason=${options.reason || "background"} mode=offline`);
       auditWarning("sync_deferred_offline", "Фоновая синхронизация отложена: программа офлайн.", {
         reason: options.reason || "background",
@@ -3082,7 +3140,7 @@ async function syncNow(successMessage = "Действие синхронизир
       const online = await runHealthCheck(options.reason || "sync");
       if (!online) {
         await refreshAll();
-        setSyncUiStatus("offline", "Нет интернета");
+        markNetworkOffline(options.reason || "sync", "health_check_failed");
         if (!options.background) setStatus("Нет подключения к интернету.", true);
         console.info(`[offline-startup] sync deferred reason=${options.reason || "background"} mode=offline`);
         auditWarning("sync_deferred_offline", "Синхронизация отложена: сайт недоступен.", {
@@ -3129,7 +3187,12 @@ async function syncNow(successMessage = "Действие синхронизир
   } catch (error) {
     console.error(error);
     const errorMessage = `Ошибка синхронизации: ${String(error)}`;
-    setSyncUiStatus("error", errorMessage);
+    if (isNetworkErrorText(error)) {
+      markNetworkOffline(options.reason || "sync", String(error));
+      scheduleReconnectWorker();
+    } else {
+      setSyncUiStatus("error", errorMessage);
+    }
     console.warn(`[offline-startup] sync error reason=${options.reason || "background"}`, error);
     auditError("sync_failed", "Синхронизация завершилась ошибкой.", {
       reason: options.reason || "background",
@@ -4255,6 +4318,15 @@ async function apiRequest(method, path, body = null) {
   let token = getToken();
   const started = performance.now();
 
+  if (shouldFastFailNetworkRequest()) {
+    const message = "Нет подключения к интернету";
+    auditWarning("api_request_skipped_offline", "Запрос mobile API пропущен: программа офлайн.", {
+      method,
+      endpoint: path,
+    });
+    throw new Error(message);
+  }
+
   // Токен пустой — случается после офлайн-входа (access_token не хранится в localStorage).
   // Пробуем получить свежий, если сеть доступна.
   if (!token && hasSyncCredentials(settings) && state.network.online) {
@@ -4293,6 +4365,10 @@ async function apiRequest(method, path, body = null) {
     }
     return result;
   } catch (error) {
+    if (isNetworkErrorText(error)) {
+      markNetworkOffline(`api:${method}`, String(error));
+      scheduleReconnectWorker();
+    }
     auditError("api_request_failed", "Ошибка запроса mobile API.", {
       method,
       endpoint: path,
