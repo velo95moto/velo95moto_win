@@ -12,6 +12,7 @@ import {
   shouldAutoSyncWhenOnline,
   shouldFastFailManualSync,
   shouldShowLongSyncWarning,
+  syncResultHasProblems,
 } from "./sync-status.js";
 import {
   canShowAssemblyOrderCreate,
@@ -244,6 +245,18 @@ test("server error can show the full sync reason", () => {
     pendingTotal: 1,
     uiMessage: "Ошибка синхронизации: Сборка 2026-05-13 на 200 ₽ для Дадаев Ислам не отправлена: duplicate daily total",
   }), "Ошибка синхронизации: Сборка 2026-05-13 на 200 ₽ для Дадаев Ислам не отправлена: duplicate daily total");
+});
+
+test("partial sync result with conflicts or errors is not treated as success", () => {
+  assert.equal(syncResultHasProblems(
+    "Синхронизировано записей: 1, сборок: 0, авансов: 0, заказов: 0. Конфликты: 1. Ошибки: 0.",
+  ), true);
+  assert.equal(syncResultHasProblems(
+    "Синхронизировано записей: 1, сборок: 0, авансов: 0, заказов: 0. Конфликты: 0. Ошибки: 2.",
+  ), true);
+  assert.equal(syncResultHasProblems(
+    "Синхронизировано записей: 1, сборок: 1, авансов: 1, заказов: 1.",
+  ), false);
 });
 
 test("offline reconnect retry uses capped backoff", () => {

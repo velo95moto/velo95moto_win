@@ -8,6 +8,7 @@ import {
   shouldAutoSyncWhenOnline,
   shouldShowLongSyncWarning,
   shouldAutoSyncAfterReconnect,
+  syncResultHasProblems,
 } from "./sync-status.js";
 import {
   canShowAssemblyOrderCreate,
@@ -196,6 +197,7 @@ const state = {
     reconnectTimer: null,
     reconnectAttempts: 0,
     syncInProgress: false,
+    manualSyncInProgress: false,
     lastHealth: null,
   },
 };
@@ -403,6 +405,7 @@ async function runHealthCheck(source = "startup", timeoutMs = 1500) {
       if (state.syncUiStatus === "offline") {
         setSyncUiStatus(state.lastSuccessfulSyncAt ? "ok" : "idle", state.lastSuccessfulSyncAt ? "Синхронизировано" : "");
       }
+      if (typeof SyncService !== "undefined") SyncService.markOnlineDetected();
     } else {
       setSyncUiStatus("offline", "Нет интернета");
     }
@@ -2858,7 +2861,7 @@ async function refreshPendingSyncSummary() {
 
 function syncStatusMessage() {
   return getSyncStatusMessage({
-    syncInProgress: state.network.syncInProgress,
+    syncInProgress: state.network.syncInProgress || state.network.manualSyncInProgress,
     uiStatus: state.syncUiStatus,
     online: state.network.online,
     longWarningVisible: state.longSyncWarningVisible,
@@ -2871,7 +2874,7 @@ function syncStatusMessage() {
 function updateSyncButton() {
   const count = Number(state.pendingTotal || (state.pendingRecords + state.pendingAssemblies + state.pendingAdvances + state.pendingOrders));
   syncButton.classList.toggle("sync-hidden", count <= 0);
-  syncButton.disabled = state.network.syncInProgress;
+  syncButton.disabled = state.network.syncInProgress || state.network.manualSyncInProgress;
   syncButton.textContent = count > 0 ? `Синхр. ${count}` : "Синхр.";
   syncButton.title = syncStatusMessage();
   if (typeof SyncService !== "undefined") SyncService.renderIndicator();
@@ -2964,44 +2967,46 @@ async function saveRecord(event) {
 }
 
 async function syncPendingRecords() {
-  saveSyncSettings();
-  await refreshPendingSyncSummary();
-  const settings = currentSettings();
-  if (!settings.server_url) {
-    setStatus("Укажите адрес сайта.");
-    auditWarning("sync_manual_blocked", "Ручная синхронизация не запущена: не указан сайт.");
-    return;
-  }
-  if (!settings.username || !settings.password) {
-    setStatus("Введите логин и пароль от сайта.");
-    auditWarning("sync_manual_blocked", "Ручная синхронизация не запущена: нет логина или пароля.");
-    return;
-  }
-  if (shouldFastFailManualSync({
-    browserOnline: browserIsOnline(),
-    syncInProgress: state.network.syncInProgress,
-    trustBrowserOnline: false,
-  })) {
-    state.network.online = false;
-    state.network.mode = "offline";
-    const message = offlineSyncMessage();
-    setSyncUiStatus("offline", "Нет интернета");
-    setStatus(message, true);
-    auditWarning("sync_manual_offline", "Ручная синхронизация невозможна: нет подключения к интернету.", {
-      pending_total: state.pendingTotal,
-    });
-    scheduleReconnectWorker();
-    return;
-  }
-  if (state.network.syncInProgress) {
+  if (state.network.manualSyncInProgress || state.network.syncInProgress) {
     setStatus("Синхронизация уже выполняется.");
     auditWarning("sync_manual_skipped", "Ручная синхронизация пропущена: уже выполняется другая синхронизация.", {
       pending_total: state.pendingTotal,
+      manual_preflight: state.network.manualSyncInProgress,
     });
     return;
   }
-
+  state.network.manualSyncInProgress = true;
+  updateSyncButton();
+  saveSyncSettings();
   try {
+    await refreshPendingSyncSummary();
+    const settings = currentSettings();
+    if (!settings.server_url) {
+      setStatus("Укажите адрес сайта.");
+      auditWarning("sync_manual_blocked", "Ручная синхронизация не запущена: не указан сайт.");
+      return;
+    }
+    if (!settings.username || !settings.password) {
+      setStatus("Введите логин и пароль от сайта.");
+      auditWarning("sync_manual_blocked", "Ручная синхронизация не запущена: нет логина или пароля.");
+      return;
+    }
+    if (shouldFastFailManualSync({
+      browserOnline: browserIsOnline(),
+      syncInProgress: state.network.syncInProgress,
+      trustBrowserOnline: false,
+    })) {
+      state.network.online = false;
+      state.network.mode = "offline";
+      const message = offlineSyncMessage();
+      setSyncUiStatus("offline", "Нет интернета");
+      setStatus(message, true);
+      auditWarning("sync_manual_offline", "Ручная синхронизация невозможна: нет подключения к интернету.", {
+        pending_total: state.pendingTotal,
+      });
+      scheduleReconnectWorker();
+      return;
+    }
     setSyncUiStatus("syncing", "Проверяю интернет...");
     const online = await runHealthCheck("manual-preflight", 700);
     if (!online) {
@@ -3019,6 +3024,9 @@ async function syncPendingRecords() {
     console.error(error);
     auditError("sync_manual_failed", "Ошибка ручной синхронизации.", { error: String(error), pending_total: state.pendingTotal });
     setStatus(`Ошибка синхронизации: ${error}`);
+  } finally {
+    state.network.manualSyncInProgress = false;
+    updateSyncButton();
   }
 }
 
@@ -3088,11 +3096,23 @@ async function syncNow(successMessage = "Действие синхронизир
     const message = await invoke("sync_records", { settings });
     await invoke("pull_records", { settings });
     await invoke("pull_all_today", { settings });
+    await refreshAll();
+    if (syncResultHasProblems(message)) {
+      const partialMessage = `Синхронизация выполнена частично: ${message}`;
+      setSyncUiStatus("error", partialMessage);
+      auditWarning("sync_partial", "Синхронизация завершилась частично, часть очереди осталась локально.", {
+        reason: options.reason || "background",
+        duration_ms: Math.round(performance.now() - syncStartedAt),
+        result: message,
+        pending_total: state.pendingTotal,
+      });
+      if (!options.background) setStatus(partialMessage, true);
+      return false;
+    }
     state.lastSuccessfulSyncAt = await invoke("mark_sync_success");
     state.network.online = true;
     state.network.mode = "online";
     setSyncUiStatus("ok", "Синхронизировано");
-    await refreshAll();
     SyncService.markOnlineSuccess(state.lastSuccessfulSyncAt);
     if (successMessage && !options.background) setStatus(successMessage);
     else if (message.includes("уже отметили")) setStatus(message);
@@ -3184,12 +3204,14 @@ const SyncService = (() => {
       scheduleReconnectWorker();
       return;
     }
+    _offline = false;
     await refreshPendingSyncSummary();
     if (!shouldAttemptBackgroundSync({
       online: state.network.online,
       syncInProgress: state.network.syncInProgress,
       pendingTotal: state.pendingTotal,
     })) {
+      if (state.syncUiStatus !== "error") _error = null;
       _renderIndicator();
       return;
     }

@@ -36,6 +36,13 @@ export function getSyncStatusMessage({
   return uiMessage || "Ожидание";
 }
 
+export function syncResultHasProblems(message = "") {
+  const text = String(message || "");
+  const conflictMatch = text.match(/Конфликты:\s*(\d+)/);
+  const errorMatch = text.match(/Ошибки:\s*(\d+)/);
+  return Number(conflictMatch?.[1] || 0) > 0 || Number(errorMatch?.[1] || 0) > 0;
+}
+
 export function shouldAutoSyncAfterReconnect({ wasOnline = false, isOnline = false, pendingTotal = 0 } = {}) {
   return Boolean(isOnline && !wasOnline && Number(pendingTotal || 0) > 0);
 }
