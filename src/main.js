@@ -2555,11 +2555,16 @@ function buildJournalRows(summaryData, monthData, previousSummaryData = null) {
   const makeRows = (items, type) => (items || []).map((employee) => {
     const cells = days.map((day) => journalCell(entries.get(`${employee.id}-${day.day}`)));
     const previous = previousById.get(Number(employee.id));
-    const diff = previous ? Number(employee.total || 0) - Number(previous.total || 0) : null;
-    const trend = Number(employee.total || 0) < 0 && diff
-      ? (diff > 0 ? "better" : "worse")
-      : null;
-    return { ...employee, employeeType: type, cells, previous_total: previous?.total ?? null, trend_diff: diff, trend, stable_id: `${type}-${employee.id}` };
+    const apiPreviousTotal = employee.previous_total ?? null;
+    const previousTotal = apiPreviousTotal !== null ? apiPreviousTotal : previous?.total ?? null;
+    const apiDiff = employee.trend_diff ?? null;
+    const diff = apiDiff !== null ? Number(apiDiff) : (previous ? Number(employee.total || 0) - Number(previous.total || 0) : null);
+    const trend = employee.trend || (
+      Number(employee.total || 0) < 0 && diff
+        ? (diff > 0 ? "better" : "worse")
+        : null
+    );
+    return { ...employee, employeeType: type, cells, previous_total: previousTotal, trend_diff: diff, trend, stable_id: `${type}-${employee.id}` };
   });
   return { days, rows: [...makeRows(summaryData.active_employees, "active"), ...makeRows(summaryData.inactive_employees, "inactive")] };
 }
