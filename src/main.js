@@ -22,6 +22,8 @@ import {
   updateErrorMessage,
 } from "./updater-policy.js";
 import {
+  buildWhatsAppDesktopUrl,
+  buildWhatsAppWebUrl,
   normalizeWhatsAppPhone,
   shouldDisableClientContact,
 } from "./whatsapp-policy.js";
@@ -1316,15 +1318,13 @@ function buildWhatsAppMessage(record) {
 }
 
 function buildWhatsAppUrl(record) {
-  const phone = normalizeWhatsAppPhone(record.phone);
   const message = buildWhatsAppMessage(record);
-  return `https://wa.me/${phone}?text=${encodeURIComponent(message)}`;
+  return buildWhatsAppWebUrl(record.phone, message);
 }
 
-function buildWhatsAppDesktopUrl(record) {
-  const phone = normalizeWhatsAppPhone(record.phone);
+function buildWhatsAppDesktopRecordUrl(record) {
   const message = buildWhatsAppMessage(record);
-  return `whatsapp://send?phone=${phone}&text=${encodeURIComponent(message)}`;
+  return buildWhatsAppDesktopUrl(record.phone, message);
 }
 
 function isWindowsPlatform() {
@@ -1350,7 +1350,7 @@ async function openWhatsAppForRecord(record) {
     return true;
   }
 
-  const desktopUrl = buildWhatsAppDesktopUrl(record);
+  const desktopUrl = buildWhatsAppDesktopRecordUrl(record);
   try {
     await window.__TAURI__.opener.openUrl(desktopUrl);
     auditInfo("whatsapp_open_desktop_attempt", "Попытка открыть WhatsApp Desktop через protocol handler.", {

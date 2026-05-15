@@ -30,6 +30,8 @@ import {
   updateErrorMessage,
 } from "./updater-policy.js";
 import {
+  buildWhatsAppDesktopUrl,
+  buildWhatsAppWebUrl,
   normalizeWhatsAppPhone,
   shouldDisableClientContact,
 } from "./whatsapp-policy.js";
@@ -155,6 +157,17 @@ test("whatsapp phone is normalized for Windows protocol links", () => {
   assert.equal(normalizeWhatsAppPhone("8 928 123 45 67"), "79281234567");
   assert.equal(normalizeWhatsAppPhone("9281234567"), "79281234567");
   assert.equal(normalizeWhatsAppPhone("12345"), "");
+});
+
+test("whatsapp web links open WhatsApp Web directly", () => {
+  assert.equal(
+    buildWhatsAppWebUrl("+7 (928) 001-29-09", "Добрый день!"),
+    "https://web.whatsapp.com/send?phone=79280012909&text=%D0%94%D0%BE%D0%B1%D1%80%D1%8B%D0%B9%20%D0%B4%D0%B5%D0%BD%D1%8C!",
+  );
+  assert.equal(
+    buildWhatsAppDesktopUrl("+7 (928) 001-29-09", "Добрый день!"),
+    "whatsapp://send?phone=79280012909&text=%D0%94%D0%BE%D0%B1%D1%80%D1%8B%D0%B9%20%D0%B4%D0%B5%D0%BD%D1%8C!",
+  );
 });
 
 test("collected records disable client phone actions", () => {
