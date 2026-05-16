@@ -59,6 +59,7 @@ const assemblyList = document.querySelector("#assembly-list");
 const assemblySearch = document.querySelector("#assembly-search");
 const assemblyDate = document.querySelector("#assembly-date");
 const salaryDateInput = document.querySelector("#salary-date-input");
+const salaryDateToInput = document.querySelector("#salary-date-to-input");
 const salaryDateMeta = document.querySelector("#salary-date-meta");
 const salaryFilterForm = document.querySelector("#salary-filter-form");
 const salaryContent = document.querySelector("#salary-content");
@@ -2791,7 +2792,7 @@ function renderSalaryRecords(records) {
     return `
       <div class="salary-empty-state empty-state">
         <strong>Ничего не выдали</strong>
-        За выбранную дату нет записей со статусом выдачи.
+        За выбранный период нет записей со статусом выдачи.
       </div>
     `;
   }
@@ -2841,6 +2842,12 @@ function renderSalaryRecords(records) {
   `;
 }
 
+function salaryRangeLabel(data) {
+  const from = data.date_from || data.date || todayIsoDate();
+  const to = data.date_to || data.date || from;
+  return from === to ? formatDate(from) : `${formatDate(from)} — ${formatDate(to)}`;
+}
+
 function renderSalaryData(data) {
   const masters = data.masters || [];
   const assemblers = (data.assemblers || []).map((item) => ({
@@ -2849,13 +2856,64 @@ function renderSalaryData(data) {
   }));
   const records = data.records || [];
   state.salaryRecords = records;
-  salaryDateInput.value = data.date || todayIsoDate();
-  salaryDateMeta.textContent = data.date ? formatDate(data.date) : "Выбери дату";
+  const from = data.date_from || data.date || todayIsoDate();
+  const to = data.date_to || data.date || from;
+  salaryDateInput.value = from;
+  if (salaryDateToInput) salaryDateToInput.value = to;
+  salaryDateMeta.textContent = salaryRangeLabel(data);
   salaryContent.innerHTML = `
-    ${renderSalaryList("Мастера", masters, "По мастерам пока пусто", "За эту дату начислений для мастеров не найдено.")}
-    ${renderSalaryList("Сборщики", assemblers, "По сборке пока пусто", "За выбранную дату начислений для сборщиков не найдено.")}
+    ${renderSalaryList("Мастера", masters, "По мастерам пока пусто", "За выбранный период начислений для мастеров не найдено.")}
+    ${renderSalaryList("Сборщики", assemblers, "По сборке пока пусто", "За выбранный период начислений для сборщиков не найдено.")}
     ${renderSalaryRecords(records)}
   `;
+}
+
+function isoDateRange(from, to) {
+  const start = new Date(`${from}T12:00:00`);
+  const end = new Date(`${to}T12:00:00`);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return [todayIsoDate()];
+  const dates = [];
+  for (const cursor = new Date(start); cursor <= end; cursor.setDate(cursor.getDate() + 1)) {
+    dates.push(cursor.toISOString().slice(0, 10));
+  }
+  return dates;
+}
+
+function normalizeSalaryRange() {
+  let from = salaryDateInput?.value || salaryDateToInput?.value || todayIsoDate();
+  let to = salaryDateToInput?.value || from;
+  if (from > to) [from, to] = [to, from];
+  if (salaryDateInput) salaryDateInput.value = from;
+  if (salaryDateToInput) salaryDateToInput.value = to;
+  return { from, to, dates: isoDateRange(from, to) };
+}
+
+function aggregateSalaryList(days, key) {
+  const totals = new Map();
+  for (const day of days) {
+    for (const item of day?.[key] || []) {
+      const name = item.name || "";
+      if (!name) continue;
+      totals.set(name, (totals.get(name) || 0) + Number(item.earned || 0));
+    }
+  }
+  return Array.from(totals.entries())
+    .map(([name, earned]) => ({ name, earned }))
+    .sort((a, b) => b.earned - a.earned || a.name.localeCompare(b.name, "ru"));
+}
+
+function aggregateSalaryData(days, from, to) {
+  const records = days.flatMap((day) => day?.records || []);
+  records.sort((a, b) => String(b.collected_date || b.record_date || "").localeCompare(String(a.collected_date || a.record_date || "")));
+  return {
+    date: from,
+    date_from: from,
+    date_to: to,
+    masters: aggregateSalaryList(days, "masters"),
+    assemblers: aggregateSalaryList(days, "assemblers"),
+    records,
+    total: days.reduce((sum, day) => sum + Number(day?.total || 0), 0),
+  };
 }
 
 function salaryCacheKey(dateValue) {
@@ -2890,43 +2948,59 @@ async function loadLocalSalaryFallback(dateValue) {
   return { data, source: "sqlite" };
 }
 
+async function loadSalaryFallbackRange(dates) {
+  const results = await Promise.all(dates.map((dateValue) => loadLocalSalaryFallback(dateValue)));
+  const source = results.every((result) => result.source === "cache") ? "cache" : "sqlite";
+  return { data: results.map((result) => result.data), source };
+}
+
+async function fetchSalaryRange(dates) {
+  const days = await Promise.all(dates.map(async (dateValue) => {
+    const data = await apiRequest("GET", `mobile/salary/?date=${encodeURIComponent(dateValue)}`);
+    writeSalaryCache(data);
+    return data;
+  }));
+  return days;
+}
+
 async function loadSalaryView() {
   if (!salaryContent) return;
   if (!salaryDateInput.value) salaryDateInput.value = todayIsoDate();
-  const dateValue = salaryDateInput.value;
-  const cache = readSalaryCache(dateValue);
-  if (cache) {
-    renderSalaryData(cache);
+  if (salaryDateToInput && !salaryDateToInput.value) salaryDateToInput.value = salaryDateInput.value;
+  const { from, to, dates } = normalizeSalaryRange();
+  const cachedDays = dates.map(readSalaryCache);
+  const hasFullCache = cachedDays.every(Boolean);
+  if (hasFullCache) {
+    renderSalaryData(aggregateSalaryData(cachedDays, from, to));
     if (!state.network.online || !browserIsOnline()) {
       setAdminStatus(salaryStatus, "Показаны последние сохранённые данные (офлайн).");
-      auditInfo("salary_offline_cache_used", "Зарплата открыта из сохранённого кэша офлайн.", { date: dateValue });
+      auditInfo("salary_offline_cache_used", "Зарплата открыта из сохранённого кэша офлайн.", { date_from: from, date_to: to });
       return;
     }
     const t0Salary = performance.now();
-    apiRequest("GET", `mobile/salary/?date=${encodeURIComponent(dateValue)}`).then((data) => {
-      console.debug(`[salary] background refresh for ${dateValue} in ${Math.round(performance.now() - t0Salary)}ms`);
-      writeSalaryCache(data);
-      renderSalaryData(data);
+    fetchSalaryRange(dates).then((days) => {
+      console.debug(`[salary] background refresh for ${from}..${to} in ${Math.round(performance.now() - t0Salary)}ms`);
+      renderSalaryData(aggregateSalaryData(days, from, to));
       setAdminStatus(salaryStatus, "");
-      auditInfo("salary_cache_refreshed", "Кэш зарплаты обновлён с сайта.", { date: dateValue });
+      auditInfo("salary_cache_refreshed", "Кэш зарплаты обновлён с сайта.", { date_from: from, date_to: to });
     }).catch(() => {});
     return;
   }
 
   if (!state.network.online || !browserIsOnline()) {
     try {
-      const { data, source } = await loadLocalSalaryFallback(dateValue);
-      renderSalaryData(data);
+      const { data, source } = await loadSalaryFallbackRange(dates);
+      renderSalaryData(aggregateSalaryData(data, from, to));
       setAdminStatus(
         salaryStatus,
         source === "cache"
           ? "Показаны последние сохранённые данные (офлайн)."
           : "Показаны данные из локальной базы (офлайн).",
       );
-      auditInfo("salary_offline_fallback_used", "Зарплата открыта из локальных данных офлайн.", { date: dateValue, source });
+      auditInfo("salary_offline_fallback_used", "Зарплата открыта из локальных данных офлайн.", { date_from: from, date_to: to, source });
     } catch (error) {
       console.error(error);
-      auditError("salary_offline_fallback_failed", "Не удалось открыть зарплату офлайн.", { date: dateValue, error: String(error) });
+      auditError("salary_offline_fallback_failed", "Не удалось открыть зарплату офлайн.", { date_from: from, date_to: to, error: String(error) });
       setAdminStatus(salaryStatus, "Нет сохранённых данных зарплаты для офлайн-просмотра.", true);
     }
     return;
@@ -2935,17 +3009,16 @@ async function loadSalaryView() {
   setAdminStatus(salaryStatus, "Загружаю...");
   const t0Salary = performance.now();
   try {
-    const data = await apiRequest("GET", `mobile/salary/?date=${encodeURIComponent(dateValue)}`);
-    console.debug(`[salary] loaded for ${dateValue} in ${Math.round(performance.now() - t0Salary)}ms`);
-    writeSalaryCache(data);
-    renderSalaryData(data);
+    const days = await fetchSalaryRange(dates);
+    console.debug(`[salary] loaded for ${from}..${to} in ${Math.round(performance.now() - t0Salary)}ms`);
+    renderSalaryData(aggregateSalaryData(days, from, to));
     setAdminStatus(salaryStatus, "");
-    auditInfo("salary_load_success", "Зарплата загружена с сайта и сохранена в кэш.", { date: dateValue });
+    auditInfo("salary_load_success", "Зарплата загружена с сайта и сохранена в кэш.", { date_from: from, date_to: to });
   } catch (error) {
     console.error(error);
     try {
-      const { data, source } = await loadLocalSalaryFallback(dateValue);
-      renderSalaryData(data);
+      const { data, source } = await loadSalaryFallbackRange(dates);
+      renderSalaryData(aggregateSalaryData(data, from, to));
       setAdminStatus(
         salaryStatus,
         source === "cache"
@@ -2953,12 +3026,13 @@ async function loadSalaryView() {
           : "Сервер недоступен. Показаны данные из локальной базы.",
       );
       auditWarning("salary_online_failed_fallback_used", "Сервер зарплаты недоступен, показаны локальные данные.", {
-        date: dateValue,
+        date_from: from,
+        date_to: to,
         source,
         error: String(error),
       });
     } catch {
-      auditError("salary_load_failed", "Не удалось загрузить зарплату ни с сайта, ни локально.", { date: dateValue, error: String(error) });
+      auditError("salary_load_failed", "Не удалось загрузить зарплату ни с сайта, ни локально.", { date_from: from, date_to: to, error: String(error) });
       setAdminStatus(salaryStatus, `Ошибка: ${error}`, true);
     }
   }
