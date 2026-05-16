@@ -171,6 +171,7 @@ const state = {
   pendingAdvances: 0,
   pendingOrders: 0,
   pendingTotal: 0,
+  pendingConflicts: 0,
   lastSuccessfulSyncAt: null,
   longSyncWarningVisible: false,
   syncUiStatus: "idle",
@@ -238,6 +239,33 @@ function auditError(action, description, details = {}) {
 }
 
 let lastUiFreezeLogAt = 0;
+let lastWakeRecoveryAt = 0;
+const SLEEP_GAP_THRESHOLD_MS = 30_000;
+
+// Heuristic: a long gap between two ticks means the OS suspended us
+// (laptop lid closed, Windows sleep, debugger pause). Re-probe the network
+// and re-arm sync — timers that fired during sleep are lost.
+async function handleSystemWake(reason, gapMs) {
+  if (Date.now() - lastWakeRecoveryAt < 5_000) return;
+  lastWakeRecoveryAt = Date.now();
+  auditInfo("system_wake_detected", "Обнаружено пробуждение системы, переинициализирую соединение.", {
+    reason,
+    gap_ms: Math.round(gapMs),
+  });
+  try {
+    state.network.reconnectAttempts = 0;
+    const online = await runHealthCheck("system-wake");
+    if (online) {
+      await handleConfirmedOnline("system-wake");
+    } else {
+      scheduleReconnectWorker();
+    }
+  } catch (error) {
+    auditError("system_wake_recover_failed", "Ошибка восстановления после пробуждения.", {
+      error: String(error),
+    });
+  }
+}
 
 function startUiFreezeWatchdog() {
   let expected = performance.now() + 5000;
@@ -245,6 +273,10 @@ function startUiFreezeWatchdog() {
     const now = performance.now();
     const lag = now - expected;
     expected = now + 5000;
+    if (lag > SLEEP_GAP_THRESHOLD_MS) {
+      handleSystemWake("watchdog_clock_gap", lag);
+      return;
+    }
     if (lag > 1500 && Date.now() - lastUiFreezeLogAt > 60_000) {
       lastUiFreezeLogAt = Date.now();
       auditWarning("ui_freeze_detected", "Обнаружена долгая задержка UI-потока.", {
@@ -252,6 +284,24 @@ function startUiFreezeWatchdog() {
       });
     }
   }, 5000);
+
+  // Belt-and-suspenders: also react when the window regains focus after the
+  // OS routed events elsewhere (Spaces switch, RDP reconnect, etc.) — the
+  // visibilitychange path catches cases where the clock gap is small.
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible" && !state.network.online) {
+      handleSystemWake("visibility_visible", 0);
+    }
+  });
+}
+
+// Promise wrapper that rejects if a Tauri IPC call hangs. Rust's HTTP client
+// has its own timeouts, but the IPC channel itself can stall on disk lock,
+// keychain prompts, or platform glitches — without this wrapper, JS would
+// await forever and the watchdog (which only sees JS event-loop freezes) would
+// stay quiet.
+async function invokeWithTimeout(name, args, timeoutMs = 30_000) {
+  return withTimeout(invoke(name, args), timeoutMs, `tauri ${name}`);
 }
 
 function todayIsoDate() {
@@ -449,19 +499,36 @@ async function runHealthCheck(source = "startup", timeoutMs = 1500) {
   }
 
   const started = performance.now();
+  const wasOffline = !state.network.online;
   try {
-    const result = await invoke("health_check", {
-      serverUrl: settings.server_url,
-      timeoutMs,
-    });
+    const result = await withTimeout(
+      invoke("health_check", {
+        serverUrl: settings.server_url,
+        timeoutMs,
+      }),
+      Math.max(2000, timeoutMs * 2 + 1000),
+      "health_check",
+    );
     state.network.lastHealth = result;
     state.network.online = Boolean(result.online);
     state.network.mode = result.online ? "online" : "offline";
     if (state.network.online) {
+      // Any successful health-check resets the backoff. Previously this was
+      // only done by the reconnect worker, so a degraded-but-up scenario
+      // (DNS flapping while navigator.onLine stayed true) could keep us on
+      // the maximum 120s delay forever.
+      state.network.reconnectAttempts = 0;
       if (state.syncUiStatus === "offline") {
         setSyncUiStatus(state.lastSuccessfulSyncAt ? "ok" : "idle", state.lastSuccessfulSyncAt ? "Синхронизировано" : "");
       }
       if (typeof SyncService !== "undefined") SyncService.markOnlineDetected();
+      // If we just transitioned offline->online without a browser-level
+      // 'online' event firing (common for short DNS drops), drain the queue.
+      if (wasOffline) {
+        handleConfirmedOnline(source).catch((error) => {
+          console.warn("[offline-startup] handleConfirmedOnline failed", error);
+        });
+      }
     } else {
       markNetworkOffline(source, result.error || "health_check_offline");
     }
@@ -3063,6 +3130,7 @@ async function refreshPendingSyncSummary() {
     state.pendingAdvances = Number(summary.advances || 0);
     state.pendingOrders = Number(summary.orders || 0);
     state.pendingTotal = Number(summary.total || 0);
+    state.pendingConflicts = Number(summary.conflicts || 0);
     state.lastSuccessfulSyncAt = summary.last_successful_sync_at || summary.last_records_sync_at || state.lastSuccessfulSyncAt;
   } catch (error) {
     console.warn("[sync] pending summary unavailable", error);
@@ -3070,6 +3138,129 @@ async function refreshPendingSyncSummary() {
   }
   updateSyncButton();
   updateLongSyncWarning();
+  updateConflictBanner();
+}
+
+function updateConflictBanner() {
+  const count = Number(state.pendingConflicts || 0);
+  let banner = document.getElementById("conflict-banner");
+  if (count <= 0) {
+    banner?.remove();
+    return;
+  }
+  if (!banner) {
+    banner = document.createElement("div");
+    banner.id = "conflict-banner";
+    banner.className = "conflict-banner";
+    banner.innerHTML = `
+      <span class="conflict-banner__text"></span>
+      <button type="button" class="conflict-banner__open">Открыть</button>
+    `;
+    document.body.append(banner);
+    banner.querySelector(".conflict-banner__open").addEventListener("click", showConflictsDialog);
+  }
+  banner.querySelector(".conflict-banner__text").textContent =
+    `Конфликты синхронизации: ${count}. Запись изменилась на сервере, выберите, какую версию оставить.`;
+}
+
+async function showConflictsDialog() {
+  let conflicts = [];
+  try {
+    conflicts = await invokeWithTimeout("list_conflicts", {}, 10_000);
+  } catch (error) {
+    setStatus(`Не удалось загрузить конфликты: ${error}`, true);
+    return;
+  }
+  if (!Array.isArray(conflicts) || conflicts.length === 0) {
+    setStatus("Конфликтов синхронизации нет.");
+    return;
+  }
+  document.getElementById("conflict-dialog")?.remove();
+  const dialog = document.createElement("div");
+  dialog.id = "conflict-dialog";
+  dialog.className = "modal conflict-dialog";
+  dialog.innerHTML = `
+    <div class="modal__backdrop"></div>
+    <div class="modal__card conflict-dialog__card">
+      <div class="modal__header">
+        <h2>Конфликты синхронизации</h2>
+        <button type="button" class="modal__close" aria-label="Закрыть">×</button>
+      </div>
+      <div class="conflict-dialog__body"></div>
+    </div>
+  `;
+  document.body.append(dialog);
+  const body = dialog.querySelector(".conflict-dialog__body");
+  conflicts.forEach((conflict) => body.append(renderConflictRow(conflict)));
+  dialog.querySelector(".modal__close").addEventListener("click", () => dialog.remove());
+  dialog.querySelector(".modal__backdrop").addEventListener("click", () => dialog.remove());
+}
+
+function renderConflictRow(conflict) {
+  const wrap = document.createElement("div");
+  wrap.className = "conflict-row";
+  const local = conflict.local || {};
+  const server = conflict.server || {};
+  const fmt = (record, key, fallback = "—") => {
+    const value = record?.[key];
+    if (value === null || value === undefined || value === "") return fallback;
+    return escapeHtml(String(value));
+  };
+  wrap.innerHTML = `
+    <div class="conflict-row__title">${fmt(local, "title")} — ${fmt(local, "client_name")}</div>
+    <div class="conflict-row__sides">
+      <div class="conflict-row__side">
+        <div class="conflict-row__heading">Моя версия (локально)</div>
+        <div>Дата: ${fmt(local, "record_date")}</div>
+        <div>Мастер: ${fmt(local, "master")}</div>
+        <div>Запчасти: ${fmt(local, "parts", "0")} ₽</div>
+        <div>Услуги: ${fmt(local, "services", "0")} ₽</div>
+        <div>Сумма: ${fmt(local, "total_amount", "0")} ₽</div>
+        <div>Забрано: ${local.collected ? "да" : "нет"}</div>
+        <div>Комментарий: ${fmt(local, "comments", "")}</div>
+      </div>
+      <div class="conflict-row__side">
+        <div class="conflict-row__heading">Версия с сайта</div>
+        <div>Дата: ${fmt(server, "date") !== "—" ? fmt(server, "date") : fmt(server, "record_date")}</div>
+        <div>Мастер: ${fmt(server, "master")}</div>
+        <div>Запчасти: ${fmt(server, "parts", "0")} ₽</div>
+        <div>Услуги: ${fmt(server, "services", "0")} ₽</div>
+        <div>Сумма: ${fmt(server, "total_amount", "0")} ₽</div>
+        <div>Забрано: ${server.collected ? "да" : "нет"}</div>
+        <div>Комментарий: ${fmt(server, "comments", "")}</div>
+      </div>
+    </div>
+    <div class="conflict-row__actions">
+      <button type="button" data-choice="server">Взять версию с сайта</button>
+      <button type="button" data-choice="client">Оставить мою версию</button>
+    </div>
+  `;
+  wrap.querySelectorAll("button[data-choice]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const choice = btn.dataset.choice;
+      btn.disabled = true;
+      try {
+        await invokeWithTimeout("resolve_conflict", {
+          syncUuid: conflict.sync_uuid,
+          choice,
+        }, 10_000);
+        auditInfo("conflict_resolved", "Пользователь разрешил конфликт записи.", {
+          sync_uuid: conflict.sync_uuid,
+          choice,
+        });
+        wrap.remove();
+        await refreshPendingSyncSummary();
+        await refreshActiveRecordList?.();
+        if (choice === "client") queueBackgroundSync("conflict-resolve");
+        const remaining = document.querySelectorAll(".conflict-row").length;
+        if (remaining === 0) document.getElementById("conflict-dialog")?.remove();
+      } catch (error) {
+        btn.disabled = false;
+        setStatus(`Не удалось разрешить конфликт: ${error}`, true);
+      }
+    });
+  });
+  return wrap;
 }
 
 function syncStatusMessage() {
@@ -3329,9 +3520,12 @@ async function syncNow(successMessage = "Действие синхронизир
     }
 
     console.info(`[offline-startup] sync started reason=${options.reason || "background"}`);
-    const message = await invoke("sync_records", { settings });
-    await invoke("pull_records", { settings });
-    await invoke("pull_all_today", { settings });
+    // Each leg gets its own timeout: the Rust side already enforces a 6s
+    // network timeout per request, but if IPC itself stalls (DB lock, OS
+    // file flush) we don't want the sync loop to wait forever.
+    const message = await invokeWithTimeout("sync_records", { settings }, 60_000);
+    await invokeWithTimeout("pull_records", { settings }, 60_000);
+    await invokeWithTimeout("pull_all_today", { settings }, 60_000);
     await refreshAll();
     if (syncResultHasProblems(message)) {
       const partialMessage = `Синхронизация выполнена частично: ${message}`;
@@ -4568,7 +4762,9 @@ async function apiRequest(method, path, body = null) {
   const args = { serverUrl, token, method, path };
   if (body !== null) args.body = body;
   try {
-    const result = await invoke("api_request", args);
+    // Rust's ureq enforces a 6s total timeout per request, but the IPC bridge
+    // itself can stall (Tauri queueing, DB lock on writes) — cap end-to-end.
+    const result = await invokeWithTimeout("api_request", args, 20_000);
     const duration = Math.round(performance.now() - started);
     if (duration > 1500) {
       auditWarning("api_request_slow", "Медленный запрос mobile API.", { method, endpoint: path, duration_ms: duration });

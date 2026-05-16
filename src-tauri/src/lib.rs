@@ -320,6 +320,15 @@ fn pending_count(conn: &Connection, table: &str) -> Result<i64, String> {
     .map_err(|error| error.to_string())
 }
 
+fn conflict_count(conn: &Connection) -> Result<i64, String> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM records WHERE sync_status = 'conflict'",
+        [],
+        |row| row.get::<_, i64>(0),
+    )
+    .map_err(|error| error.to_string())
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -552,6 +561,15 @@ fn init_database(app: tauri::AppHandle) -> Result<(), String> {
         "records",
         "original_shop_service_amount",
         "original_shop_service_amount INTEGER NOT NULL DEFAULT 0",
+    )?;
+    // Stores the server's version of a record when the push hits a version
+    // conflict. The JS layer reads this via `list_conflicts` and offers the
+    // operator a "server wins / keep my version" choice.
+    ensure_column(
+        &conn,
+        "records",
+        "conflict_payload",
+        "conflict_payload TEXT NOT NULL DEFAULT ''",
     )?;
     Ok(())
 }
@@ -1895,7 +1913,7 @@ fn save_server_records(conn: &Connection, records: &[serde_json::Value]) -> Resu
 
 #[tauri::command]
 fn pull_records(app: tauri::AppHandle, settings: SyncSettings) -> Result<String, String> {
-    let conn = open_database(&app)?;
+    let mut conn = open_database(&app)?;
     let agent = pull_agent();
     let token = fetch_token_with_agent(&agent, &settings)?;
     let base = settings.server_url.trim_end_matches('/');
@@ -1958,15 +1976,22 @@ fn pull_records(app: tauri::AppHandle, settings: SyncSettings) -> Result<String,
         }
     }
 
-    // Upsert active records
-    let saved_count = save_server_records(&conn, &active)?;
+    // Apply all server changes atomically: either the whole pull is committed
+    // (active upserts + tombstone deletes + sync cursor advance) or nothing is
+    // applied — protects against partial state if the process is killed mid-pull.
+    let tx = conn.transaction().map_err(|error| error.to_string())?;
 
-    // Delete soft-deleted records — skip if locally pending (unsent changes)
+    // Upsert active records
+    let saved_count = save_server_records(&tx, &active)?;
+
+    // Delete soft-deleted records — skip if locally pending (unsent changes).
+    // We only delete when the server explicitly sets `sync_deleted_at`; a missing
+    // record is never treated as a tombstone.
     let mut deleted_count = 0usize;
     for uuid in &deleted_uuids {
-        let has_pending: bool = conn
+        let has_pending: bool = tx
             .query_row(
-                "SELECT COUNT(*) FROM records WHERE sync_uuid = ?1 AND sync_status IN ('pending', 'error')",
+                "SELECT COUNT(*) FROM records WHERE sync_uuid = ?1 AND sync_status IN ('pending', 'error', 'conflict')",
                 params![uuid],
                 |row| row.get::<_, i64>(0),
             )
@@ -1974,7 +1999,7 @@ fn pull_records(app: tauri::AppHandle, settings: SyncSettings) -> Result<String,
             > 0;
 
         if !has_pending {
-            conn.execute("DELETE FROM records WHERE sync_uuid = ?1", params![uuid])
+            tx.execute("DELETE FROM records WHERE sync_uuid = ?1", params![uuid])
                 .map_err(|error| error.to_string())?;
             deleted_count += 1;
         }
@@ -1982,8 +2007,10 @@ fn pull_records(app: tauri::AppHandle, settings: SyncSettings) -> Result<String,
 
     // Persist the new high-water mark only after successful processing
     if !server_time.is_empty() {
-        set_sync_state(&conn, "last_records_sync_at", &server_time)?;
+        set_sync_state(&tx, "last_records_sync_at", &server_time)?;
     }
+
+    tx.commit().map_err(|error| error.to_string())?;
 
     if is_full_sync {
         Ok(format!(
@@ -2000,7 +2027,7 @@ fn pull_records(app: tauri::AppHandle, settings: SyncSettings) -> Result<String,
 
 #[tauri::command]
 fn pull_assemblies(app: tauri::AppHandle, settings: SyncSettings) -> Result<String, String> {
-    let conn = open_database(&app)?;
+    let mut conn = open_database(&app)?;
     let agent = pull_agent();
     let token = fetch_token_with_agent(&agent, &settings)?;
     let base = settings.server_url.trim_end_matches('/');
@@ -2021,6 +2048,7 @@ fn pull_assemblies(app: tauri::AppHandle, settings: SyncSettings) -> Result<Stri
         .cloned()
         .unwrap_or_default();
 
+    let tx = conn.transaction().map_err(|error| error.to_string())?;
     let mut inserted = 0usize;
     for entry in &entries {
         let server_id = match entry.get("id").and_then(|v| v.as_i64()) {
@@ -2031,7 +2059,7 @@ fn pull_assemblies(app: tauri::AppHandle, settings: SyncSettings) -> Result<Stri
         let amount = entry.get("amount").and_then(|v| v.as_i64()).unwrap_or(0);
         let entry_date = entry.get("date").and_then(|v| v.as_str()).unwrap_or(&today);
 
-        let already_exists: bool = conn
+        let already_exists: bool = tx
             .query_row(
                 "SELECT COUNT(*) FROM assemblies WHERE server_id = ?1",
                 params![server_id],
@@ -2042,7 +2070,7 @@ fn pull_assemblies(app: tauri::AppHandle, settings: SyncSettings) -> Result<Stri
 
         if !already_exists {
             let sync_uuid = format!("server-{server_id}");
-            conn.execute(
+            tx.execute(
                 r#"
                 INSERT OR IGNORE INTO assemblies
                     (server_id, sync_uuid, sync_status, entry_date, collector_name, amount, assembly_count)
@@ -2054,6 +2082,7 @@ fn pull_assemblies(app: tauri::AppHandle, settings: SyncSettings) -> Result<Stri
             inserted += 1;
         }
     }
+    tx.commit().map_err(|error| error.to_string())?;
 
     Ok(format!("Загружено {inserted} новых записей сборки."))
 }
@@ -2062,7 +2091,7 @@ fn pull_assemblies(app: tauri::AppHandle, settings: SyncSettings) -> Result<Stri
 
 #[tauri::command]
 fn pull_all_today(app: tauri::AppHandle, settings: SyncSettings) -> Result<serde_json::Value, String> {
-    let conn = open_database(&app)?;
+    let mut conn = open_database(&app)?;
     let agent = pull_agent();
     let token = fetch_token_with_agent(&agent, &settings)?;
     let base = settings.server_url.trim_end_matches('/');
@@ -2083,30 +2112,28 @@ fn pull_all_today(app: tauri::AppHandle, settings: SyncSettings) -> Result<serde
     {
         let entries = resp.get("entries").and_then(|v| v.as_array()).cloned().unwrap_or_default();
 
-        // Собираем server_id которые вернул сервер
+        // Server ids that are still present.
         let server_ids: Vec<i64> = entries.iter()
             .filter_map(|e| e.get("id").and_then(|v| v.as_i64()))
             .collect();
 
-        // Удаляем локальные synced-записи за сегодня которых больше нет на сервере
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+
+        // Delete local synced rows whose server_id is no longer returned.
+        // If the server returned an empty list, treat it as "no signal" and
+        // leave local synced rows alone — a transient 5xx/proxy glitch must
+        // not wipe today's data. The next pull will reconcile.
         if !server_ids.is_empty() {
             let placeholders = server_ids.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(",");
-            let _ = conn.execute(
+            let _ = tx.execute(
                 &format!("DELETE FROM assemblies WHERE date(entry_date) = ?1 AND sync_status = 'synced' AND server_id IS NOT NULL AND server_id NOT IN ({placeholders})"),
-                params![today],
-            );
-        } else {
-            // Сервер вернул пустой список — удаляем все synced за сегодня
-            let _ = conn.execute(
-                "DELETE FROM assemblies WHERE date(entry_date) = ?1 AND sync_status = 'synced'",
                 params![today],
             );
         }
 
-        // Добавляем новые записи с сервера
         for entry in &entries {
             let Some(server_id) = entry.get("id").and_then(|v| v.as_i64()) else { continue };
-            let exists = conn.query_row(
+            let exists = tx.query_row(
                 "SELECT COUNT(*) FROM assemblies WHERE server_id = ?1",
                 params![server_id], |row| row.get::<_, i64>(0),
             ).unwrap_or(0) > 0;
@@ -2115,13 +2142,15 @@ fn pull_all_today(app: tauri::AppHandle, settings: SyncSettings) -> Result<serde
                 let date = entry.get("date").and_then(|v| v.as_str()).unwrap_or(&today);
                 let name = entry.get("collector_name").and_then(|v| v.as_str()).unwrap_or("");
                 let amount = entry.get("amount").and_then(|v| v.as_i64()).unwrap_or(0);
-                let _ = conn.execute(
+                let _ = tx.execute(
                     "INSERT OR IGNORE INTO assemblies (server_id, sync_uuid, sync_status, entry_date, collector_name, amount, assembly_count) VALUES (?1, ?2, 'synced', ?3, ?4, ?5, 1)",
                     params![server_id, sync_uuid, date, name, amount],
                 );
                 assemblies_added += 1;
             }
         }
+
+        tx.commit().map_err(|e| e.to_string())?;
     }
 
     // --- assembly orders ---
@@ -2133,22 +2162,20 @@ fn pull_all_today(app: tauri::AppHandle, settings: SyncSettings) -> Result<serde
     {
         let orders_list = resp.get("orders").and_then(|v| v.as_array()).cloned().unwrap_or_default();
 
-        // Collect server_ids still present. The server cleans up orders older than today
-        // automatically, so we use this list as the authoritative current state.
+        // Server ids that are still present. The server cleans up old orders,
+        // so the returned list is authoritative — when non-empty.
         let server_ids: Vec<i64> = orders_list.iter()
             .filter_map(|o| o.get("id").and_then(|v| v.as_i64()))
             .collect();
 
-        // Soft-delete: remove local synced orders that the server no longer returns.
-        // Never touch 'pending' rows — desktop's unsynced changes are preserved.
-        if server_ids.is_empty() {
-            let _ = conn.execute(
-                "DELETE FROM assembly_orders WHERE sync_status = 'synced'",
-                [],
-            );
-        } else {
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+
+        // Soft-delete: remove local synced orders the server no longer returns.
+        // If the server returned an empty list, leave local synced orders alone —
+        // a transient empty response (auth race, 5xx, proxy) must not nuke state.
+        if !server_ids.is_empty() {
             let placeholders = server_ids.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(",");
-            let _ = conn.execute(
+            let _ = tx.execute(
                 &format!("DELETE FROM assembly_orders WHERE sync_status = 'synced' AND server_id IS NOT NULL AND server_id NOT IN ({placeholders})"),
                 [],
             );
@@ -2167,19 +2194,19 @@ fn pull_all_today(app: tauri::AppHandle, settings: SyncSettings) -> Result<serde
 
             // Match by sync_uuid first (idempotent for our own pushes), then by server_id.
             let existing: Option<i64> = if !sync_uuid.is_empty() {
-                conn.query_row(
+                tx.query_row(
                     "SELECT local_id FROM assembly_orders WHERE sync_uuid = ?1",
                     params![sync_uuid], |row| row.get(0),
                 ).ok()
             } else {
-                conn.query_row(
+                tx.query_row(
                     "SELECT local_id FROM assembly_orders WHERE server_id = ?1",
                     params![server_id], |row| row.get(0),
                 ).ok()
             };
 
             if let Some(local_id) = existing {
-                let _ = conn.execute(
+                let _ = tx.execute(
                     "UPDATE assembly_orders SET server_id=?1, name=?2, assigned_collector_name=?3, is_urgent=?4, status=?5, is_done=?6, completed_at=?7, sync_status='synced', last_error='' WHERE local_id=?8 AND sync_status='synced'",
                     params![server_id, name, assigned, is_urgent, status, is_done, completed_at, local_id],
                 );
@@ -2190,13 +2217,15 @@ fn pull_all_today(app: tauri::AppHandle, settings: SyncSettings) -> Result<serde
                 } else {
                     sync_uuid.to_string()
                 };
-                let _ = conn.execute(
+                let _ = tx.execute(
                     "INSERT INTO assembly_orders (server_id, sync_uuid, name, assigned_collector_name, is_urgent, status, is_done, created_at, completed_at, sync_status) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,'synced')",
                     params![server_id, final_uuid, name, assigned, is_urgent, status, is_done, created_at, completed_at],
                 );
                 orders_inserted += 1;
             }
         }
+
+        tx.commit().map_err(|e| e.to_string())?;
     }
 
     // --- advances for today ---
@@ -2208,21 +2237,18 @@ fn pull_all_today(app: tauri::AppHandle, settings: SyncSettings) -> Result<serde
     {
         let entries = resp.get("advances").and_then(|v| v.as_array()).cloned().unwrap_or_default();
 
-        // Collect server_ids that are still present.
         let server_ids: Vec<i64> = entries.iter()
             .filter_map(|e| e.get("id").and_then(|v| v.as_i64()))
             .collect();
 
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+
         // Delete local synced rows for today that the server no longer returns
-        // (means web user deleted them). Never touch 'pending' rows.
-        if server_ids.is_empty() {
-            let _ = conn.execute(
-                "DELETE FROM employee_advances WHERE advance_date = ?1 AND sync_status = 'synced'",
-                params![today],
-            );
-        } else {
+        // (web user deleted them). If the server returned an empty list, do
+        // nothing — a transient empty response must not erase the day.
+        if !server_ids.is_empty() {
             let placeholders = server_ids.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(",");
-            let _ = conn.execute(
+            let _ = tx.execute(
                 &format!("DELETE FROM employee_advances WHERE advance_date = ?1 AND sync_status = 'synced' AND server_id IS NOT NULL AND server_id NOT IN ({placeholders})"),
                 params![today],
             );
@@ -2233,12 +2259,12 @@ fn pull_all_today(app: tauri::AppHandle, settings: SyncSettings) -> Result<serde
             let sync_uuid = adv.get("sync_uuid").and_then(|v| v.as_str()).unwrap_or("");
             // Match by sync_uuid first (idempotent if desktop pushed it), then by server_id.
             let existing_id: Option<i64> = if !sync_uuid.is_empty() {
-                conn.query_row(
+                tx.query_row(
                     "SELECT local_id FROM employee_advances WHERE sync_uuid = ?1",
                     params![sync_uuid], |row| row.get(0),
                 ).ok()
             } else {
-                conn.query_row(
+                tx.query_row(
                     "SELECT local_id FROM employee_advances WHERE server_id = ?1",
                     params![server_id], |row| row.get(0),
                 ).ok()
@@ -2246,7 +2272,7 @@ fn pull_all_today(app: tauri::AppHandle, settings: SyncSettings) -> Result<serde
             if let Some(local_id) = existing_id {
                 // Update existing row to reflect server state, but only if it's already 'synced'
                 // (don't overwrite local 'pending' edits).
-                let _ = conn.execute(
+                let _ = tx.execute(
                     "UPDATE employee_advances SET server_id = ?1, sync_status = 'synced', last_error = '' WHERE local_id = ?2 AND sync_status = 'synced'",
                     params![server_id, local_id],
                 );
@@ -2259,13 +2285,15 @@ fn pull_all_today(app: tauri::AppHandle, settings: SyncSettings) -> Result<serde
                 } else {
                     sync_uuid.to_string()
                 };
-                let _ = conn.execute(
+                let _ = tx.execute(
                     "INSERT INTO employee_advances (server_id, sync_uuid, employee_name, amount, advance_date, sync_status) VALUES (?1,?2,?3,?4,?5,'synced')",
                     params![server_id, final_uuid, employee_name, amount, date],
                 );
                 advances_added += 1;
             }
         }
+
+        tx.commit().map_err(|e| e.to_string())?;
     }
 
     Ok(json!({
@@ -2280,7 +2308,7 @@ fn pull_all_today(app: tauri::AppHandle, settings: SyncSettings) -> Result<serde
 
 #[tauri::command]
 fn pull_advances(app: tauri::AppHandle, settings: SyncSettings) -> Result<String, String> {
-    let conn = open_database(&app)?;
+    let mut conn = open_database(&app)?;
     let agent = pull_agent();
     let token = fetch_token_with_agent(&agent, &settings)?;
     let base = settings.server_url.trim_end_matches('/');
@@ -2300,6 +2328,7 @@ fn pull_advances(app: tauri::AppHandle, settings: SyncSettings) -> Result<String
         .cloned()
         .unwrap_or_default();
 
+    let tx = conn.transaction().map_err(|error| error.to_string())?;
     let mut inserted = 0usize;
     for adv in &advances {
         let server_id = match adv.get("id").and_then(|v| v.as_i64()) {
@@ -2312,12 +2341,12 @@ fn pull_advances(app: tauri::AppHandle, settings: SyncSettings) -> Result<String
         let advance_date = adv.get("date").and_then(|v| v.as_str()).unwrap_or("");
 
         let existing_id: Option<i64> = if !sync_uuid.is_empty() {
-            conn.query_row(
+            tx.query_row(
                 "SELECT local_id FROM employee_advances WHERE sync_uuid = ?1",
                 params![sync_uuid], |row| row.get(0),
             ).ok()
         } else {
-            conn.query_row(
+            tx.query_row(
                 "SELECT local_id FROM employee_advances WHERE server_id = ?1",
                 params![server_id], |row| row.get(0),
             ).ok()
@@ -2325,7 +2354,7 @@ fn pull_advances(app: tauri::AppHandle, settings: SyncSettings) -> Result<String
 
         if let Some(local_id) = existing_id {
             // Only refresh metadata for synced rows; don't clobber local pending changes.
-            let _ = conn.execute(
+            let _ = tx.execute(
                 "UPDATE employee_advances SET server_id = ?1, sync_status = 'synced', last_error = '' WHERE local_id = ?2 AND sync_status = 'synced'",
                 params![server_id, local_id],
             );
@@ -2335,7 +2364,7 @@ fn pull_advances(app: tauri::AppHandle, settings: SyncSettings) -> Result<String
             } else {
                 sync_uuid.to_string()
             };
-            conn.execute(
+            tx.execute(
                 r#"
                 INSERT INTO employee_advances
                     (server_id, sync_uuid, employee_name, amount, advance_date, sync_status)
@@ -2347,6 +2376,7 @@ fn pull_advances(app: tauri::AppHandle, settings: SyncSettings) -> Result<String
             inserted += 1;
         }
     }
+    tx.commit().map_err(|error| error.to_string())?;
 
     Ok(format!("Загружено {inserted} новых авансов."))
 }
@@ -2355,7 +2385,7 @@ fn pull_advances(app: tauri::AppHandle, settings: SyncSettings) -> Result<String
 
 #[tauri::command]
 fn pull_assembly_orders(app: tauri::AppHandle, settings: SyncSettings) -> Result<String, String> {
-    let conn = open_database(&app)?;
+    let mut conn = open_database(&app)?;
     let agent = pull_agent();
     let token = fetch_token_with_agent(&agent, &settings)?;
     let base = settings.server_url.trim_end_matches('/');
@@ -2375,20 +2405,18 @@ fn pull_assembly_orders(app: tauri::AppHandle, settings: SyncSettings) -> Result
         .cloned()
         .unwrap_or_default();
 
-    // Server cleans up old orders; treat returned list as authoritative current state.
+    // Server cleans up old orders; treat returned list as authoritative state
+    // — but only when non-empty. An empty response is treated as "no signal"
+    // to avoid wiping all synced orders on a transient server hiccup.
     let server_ids: Vec<i64> = orders.iter()
         .filter_map(|o| o.get("id").and_then(|v| v.as_i64()))
         .collect();
 
-    // Soft-delete locally synced orders not returned by the server.
-    if server_ids.is_empty() {
-        let _ = conn.execute(
-            "DELETE FROM assembly_orders WHERE sync_status = 'synced'",
-            [],
-        );
-    } else {
+    let tx = conn.transaction().map_err(|error| error.to_string())?;
+
+    if !server_ids.is_empty() {
         let placeholders = server_ids.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(",");
-        let _ = conn.execute(
+        let _ = tx.execute(
             &format!("DELETE FROM assembly_orders WHERE sync_status = 'synced' AND server_id IS NOT NULL AND server_id NOT IN ({placeholders})"),
             [],
         );
@@ -2411,12 +2439,12 @@ fn pull_assembly_orders(app: tauri::AppHandle, settings: SyncSettings) -> Result
         let completed_at = order.get("completed_at").and_then(|v| v.as_str()).unwrap_or("");
 
         let existing: Option<i64> = if !sync_uuid.is_empty() {
-            conn.query_row(
+            tx.query_row(
                 "SELECT local_id FROM assembly_orders WHERE sync_uuid = ?1",
                 params![sync_uuid], |row| row.get(0),
             ).ok()
         } else {
-            conn.query_row(
+            tx.query_row(
                 "SELECT local_id FROM assembly_orders WHERE server_id = ?1",
                 params![server_id], |row| row.get(0),
             ).ok()
@@ -2424,7 +2452,7 @@ fn pull_assembly_orders(app: tauri::AppHandle, settings: SyncSettings) -> Result
 
         if let Some(local_id) = existing {
             // Only update if the local record hasn't been modified (sync_status = 'synced')
-            conn.execute(
+            tx.execute(
                 r#"
                 UPDATE assembly_orders
                 SET server_id = ?1,
@@ -2448,7 +2476,7 @@ fn pull_assembly_orders(app: tauri::AppHandle, settings: SyncSettings) -> Result
             } else {
                 sync_uuid.to_string()
             };
-            conn.execute(
+            tx.execute(
                 r#"
                 INSERT INTO assembly_orders
                     (server_id, sync_uuid, name, assigned_collector_name, is_urgent, status, is_done,
@@ -2461,6 +2489,7 @@ fn pull_assembly_orders(app: tauri::AppHandle, settings: SyncSettings) -> Result
             inserted += 1;
         }
     }
+    tx.commit().map_err(|error| error.to_string())?;
 
     Ok(format!("Заказы сборок: +{inserted} новых, ~{updated} обновлено."))
 }
@@ -2488,15 +2517,121 @@ fn get_pending_sync_summary(app: tauri::AppHandle) -> Result<serde_json::Value, 
     let assemblies = pending_count(&conn, "assemblies")?;
     let advances = pending_count(&conn, "employee_advances")?;
     let orders = pending_count(&conn, "assembly_orders")?;
+    let conflicts = conflict_count(&conn)?;
     Ok(json!({
         "records": records,
         "assemblies": assemblies,
         "advances": advances,
         "orders": orders,
+        "conflicts": conflicts,
         "total": records + assemblies + advances + orders,
         "last_successful_sync_at": get_sync_state(&conn, "last_successful_sync_at"),
         "last_records_sync_at": get_sync_state(&conn, "last_records_sync_at"),
     }))
+}
+
+#[tauri::command]
+fn list_conflicts(app: tauri::AppHandle) -> Result<Vec<serde_json::Value>, String> {
+    let conn = open_database(&app)?;
+    let mut stmt = conn
+        .prepare(
+            r#"
+            SELECT local_id, server_id, sync_uuid, base_sync_version, record_date, title,
+                   client_name, phone, master, parts, services, comments, free_repair,
+                   master_only, total_amount, collected, collected_date, conflict_payload,
+                   last_error, updated_at
+            FROM records
+            WHERE sync_status = 'conflict'
+            ORDER BY local_id
+            "#,
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            let payload_raw: String = row.get(17)?;
+            let server_payload: serde_json::Value = serde_json::from_str(&payload_raw)
+                .unwrap_or(serde_json::Value::Null);
+            Ok(json!({
+                "local_id": row.get::<_, i64>(0)?,
+                "server_id": row.get::<_, Option<i64>>(1)?,
+                "sync_uuid": row.get::<_, String>(2)?,
+                "base_sync_version": row.get::<_, Option<i64>>(3)?,
+                "local": {
+                    "record_date": row.get::<_, String>(4)?,
+                    "title": row.get::<_, String>(5)?,
+                    "client_name": row.get::<_, String>(6)?,
+                    "phone": row.get::<_, String>(7)?,
+                    "master": row.get::<_, String>(8)?,
+                    "parts": row.get::<_, i64>(9)?,
+                    "services": row.get::<_, i64>(10)?,
+                    "comments": row.get::<_, String>(11)?,
+                    "free_repair": row.get::<_, i64>(12)? != 0,
+                    "master_only": row.get::<_, i64>(13)? != 0,
+                    "total_amount": row.get::<_, i64>(14)?,
+                    "collected": row.get::<_, i64>(15)? != 0,
+                    "collected_date": row.get::<_, String>(16)?,
+                },
+                "server": server_payload,
+                "last_error": row.get::<_, String>(18)?,
+                "updated_at": row.get::<_, String>(19)?,
+            }))
+        })
+        .map_err(|error| error.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())
+}
+
+/// Resolve a sync conflict for a record. `choice` is either:
+/// - "server": overwrite the local row with the server payload and mark synced.
+/// - "client": clear the version tag so the next sync_records pushes the local
+///   row as a fresh write (server-side accepts because no base_sync_version is
+///   sent, treating it as an idempotent upsert by sync_uuid).
+#[tauri::command]
+fn resolve_conflict(app: tauri::AppHandle, sync_uuid: String, choice: String) -> Result<(), String> {
+    if sync_uuid.trim().is_empty() {
+        return Err("Не указан идентификатор конфликта.".to_string());
+    }
+    let conn = open_database(&app)?;
+    match choice.as_str() {
+        "server" => {
+            let payload_raw: String = conn
+                .query_row(
+                    "SELECT conflict_payload FROM records WHERE sync_uuid = ?1 AND sync_status = 'conflict'",
+                    params![sync_uuid],
+                    |row| row.get(0),
+                )
+                .map_err(|_| "Конфликт уже разрешён или запись не найдена.".to_string())?;
+            let server_record: serde_json::Value = serde_json::from_str(&payload_raw)
+                .map_err(|error| format!("Не удалось прочитать данные сервера: {error}"))?;
+            // Temporarily clear conflict so save_server_records can overwrite freely.
+            conn.execute(
+                "UPDATE records SET sync_status = 'synced', conflict_payload = '', last_error = '' WHERE sync_uuid = ?1",
+                params![sync_uuid],
+            )
+            .map_err(|error| error.to_string())?;
+            save_server_records(&conn, &[server_record])?;
+            Ok(())
+        }
+        "client" => {
+            // Force a fresh push on the next sync. Drop the version stamp so the
+            // server treats this as a new write rather than a stale update.
+            conn.execute(
+                r#"
+                UPDATE records
+                SET sync_status = 'pending',
+                    base_sync_version = NULL,
+                    conflict_payload = '',
+                    last_error = '',
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE sync_uuid = ?1 AND sync_status = 'conflict'
+                "#,
+                params![sync_uuid],
+            )
+            .map_err(|error| error.to_string())?;
+            Ok(())
+        }
+        other => Err(format!("Неизвестный способ разрешения конфликта: {other}.")),
+    }
 }
 
 #[tauri::command]
@@ -2632,6 +2767,9 @@ fn sync_records(app: tauri::AppHandle, settings: SyncSettings) -> Result<String,
                     .get("sync_uuid")
                     .and_then(|value| value.as_str())
                     .unwrap_or_default();
+                if sync_uuid.is_empty() {
+                    continue;
+                }
                 let server_collected = server_record
                     .get("collected")
                     .and_then(|value| value.as_bool())
@@ -2640,13 +2778,17 @@ fn sync_records(app: tauri::AppHandle, settings: SyncSettings) -> Result<String,
                     .iter()
                     .any(|record| record.sync_uuid == sync_uuid && record.collected);
 
-                if server_collected && local_collected && !sync_uuid.is_empty() {
+                if server_collected && local_collected {
+                    // Auto-resolve the collected-on-server case: it's an idempotent
+                    // local intent (the operator also marked it collected), so the
+                    // server snapshot wins without bothering the user.
                     save_server_records(&conn, &[server_record.clone()])?;
                     conn.execute(
                         r#"
                         UPDATE records
                         SET sync_status = 'synced',
                             last_error = '',
+                            conflict_payload = '',
                             updated_at = CURRENT_TIMESTAMP
                         WHERE sync_uuid = ?1
                         "#,
@@ -2656,6 +2798,23 @@ fn sync_records(app: tauri::AppHandle, settings: SyncSettings) -> Result<String,
                     synced_count += 1;
                     already_collected_count += 1;
                     conflicts_count = conflicts_count.saturating_sub(1);
+                } else {
+                    // Stash the server snapshot so the operator can pick a winner.
+                    // The local row stays as it was — sync_status='conflict' freezes
+                    // it from further pushes until resolve_conflict() is called.
+                    let payload = serde_json::to_string(server_record).unwrap_or_default();
+                    conn.execute(
+                        r#"
+                        UPDATE records
+                        SET sync_status = 'conflict',
+                            last_error = 'Запись изменилась на сервере. Откройте «Конфликты синхронизации» и выберите версию.',
+                            conflict_payload = ?1,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE sync_uuid = ?2
+                        "#,
+                        params![payload, sync_uuid],
+                    )
+                    .map_err(|error| error.to_string())?;
                 }
             }
         }
@@ -2938,11 +3097,17 @@ fn sync_records(app: tauri::AppHandle, settings: SyncSettings) -> Result<String,
                     synced_orders += 1;
                 }
                 Err(ureq::Error::Status(404, _)) => {
-                    // Order already gone on server — treat as synced to avoid retry loop.
+                    // Order is gone on the server. We must NOT silently drop the
+                    // local pending change — the 404 may be a transient routing
+                    // glitch, or the server may have garbage-collected an order
+                    // we still consider open. Surface it as an error so the
+                    // operator can decide; pull_assembly_orders will eventually
+                    // reconcile if it's a real soft-delete.
                     let _ = conn.execute(
-                        "UPDATE assembly_orders SET sync_status = 'synced', last_error = '' WHERE sync_uuid = ?1",
-                        params![order.sync_uuid],
+                        "UPDATE assembly_orders SET sync_status = 'error', last_error = ?1 WHERE sync_uuid = ?2",
+                        params!["Заказ не найден на сервере (404).", order.sync_uuid],
                     );
+                    errors_count += 1;
                 }
                 Err(e) => {
                     let _ = conn.execute(
@@ -3202,6 +3367,8 @@ pub fn run() {
             api_request,
             get_sync_info,
             get_pending_sync_summary,
+            list_conflicts,
+            resolve_conflict,
             mark_sync_success,
             reset_sync,
             check_biometric_available,
