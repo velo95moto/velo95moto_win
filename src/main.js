@@ -199,6 +199,7 @@ const state = {
   currentPage: 1,
   perPage: 100,
   datesInitialized: false,
+  recordsFiltersDirty: false,
   editingRecordKey: "",
   pendingEditRecordKey: "",
   previousView: null,
@@ -638,18 +639,27 @@ function desktopNavView(item) {
   return item.view;
 }
 
+function getDefaultRecordsDate(records = state.records) {
+  return records[0]?.record_date || todayIsoDate();
+}
+
+function applyDefaultRecordsDate() {
+  const defaultDate = getDefaultRecordsDate();
+  startDateFilter.value = defaultDate;
+  endDateFilter.value = defaultDate;
+}
+
 function resetRecordsViewState() {
   phoneFilter.value = "";
   masterFilter.value = "";
   collectedFilter.value = "";
-  const today = todayIsoDate();
-  startDateFilter.value = today;
-  endDateFilter.value = today;
+  applyDefaultRecordsDate();
   filtersPanel?.classList.add("is-hidden");
   headerPhoneSearch.value = "";
   state.headerSearchQuery = "";
   state.previousView = null;
   state.currentPage = 1;
+  state.recordsFiltersDirty = false;
   state.selectedRecordIds.clear();
   selectAllCheckbox.checked = false;
   if (searchSelectAllCheckbox) searchSelectAllCheckbox.checked = false;
@@ -1656,13 +1666,12 @@ async function saveEditedRecord(event) {
 
 async function loadRecords() {
   const rows = await invoke("list_records");
+  const shouldApplyDefaultDate = !state.datesInitialized || !state.recordsFiltersDirty;
   state.records = rows;
-  if (!state.datesInitialized) {
-    const today = todayIsoDate();
-    startDateFilter.value = today;
-    endDateFilter.value = today;
-    state.datesInitialized = true;
+  if (shouldApplyDefaultDate) {
+    applyDefaultRecordsDate();
   }
+  state.datesInitialized = true;
   state.pendingRecords = rows.filter((record) => record.sync_status !== "synced").length;
   updateSyncButton();
   filterRecords();
@@ -4312,11 +4321,13 @@ window.addEventListener("DOMContentLoaded", async () => {
 
   advancesSearch?.addEventListener("input", renderAdvances);
   phoneFilter.addEventListener("input", () => {
+    state.recordsFiltersDirty = true;
     state.currentPage = 1;
     filterRecords();
   });
   [masterFilter, collectedFilter, startDateFilter, endDateFilter].forEach((input) => {
     input.addEventListener("change", () => {
+      state.recordsFiltersDirty = true;
       state.currentPage = 1;
       filterRecords();
     });
@@ -4330,6 +4341,7 @@ window.addEventListener("DOMContentLoaded", async () => {
     collectedFilter.value = "";
     startDateFilter.value = "";
     endDateFilter.value = "";
+    state.recordsFiltersDirty = true;
     state.currentPage = 1;
     filterRecords();
   });
