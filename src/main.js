@@ -638,13 +638,38 @@ function desktopNavView(item) {
   return item.view;
 }
 
-function switchView(viewName) {
+function resetRecordsViewState() {
+  phoneFilter.value = "";
+  masterFilter.value = "";
+  collectedFilter.value = "";
+  const today = todayIsoDate();
+  startDateFilter.value = today;
+  endDateFilter.value = today;
+  filtersPanel?.classList.add("is-hidden");
+  headerPhoneSearch.value = "";
+  state.headerSearchQuery = "";
+  state.previousView = null;
+  state.currentPage = 1;
+  state.selectedRecordIds.clear();
+  selectAllCheckbox.checked = false;
+  if (searchSelectAllCheckbox) searchSelectAllCheckbox.checked = false;
+  filterRecords();
+}
+
+function openDefaultRecordsView() {
+  switchView("records", { resetRecords: true });
+}
+
+function switchView(viewName, options = {}) {
   if (viewName === "disabled") {
     setStatus("Этот раздел пока открывается только на сайте. Основные офлайн-разделы уже доступны здесь.");
     return;
   }
   closeAllDropdowns();
   state.currentView = viewName;
+  if (viewName === "records" && options.resetRecords) {
+    resetRecordsViewState();
+  }
   document.querySelectorAll(".nav-tab").forEach((button) => {
     button.classList.toggle(
       "is-active",
@@ -717,6 +742,9 @@ function renderNavigation() {
     if (view === "assembly-orders") {
       button.innerHTML = `${escapeHtml(item.label)} <span id="assembly-orders-nav-badge" class="nav-live-badge is-hidden"></span>`;
       button.addEventListener("click", () => { AssemblyOrderPoller.markSeen(); switchView(view); });
+    } else if (view === "records") {
+      button.textContent = item.label;
+      button.addEventListener("click", openDefaultRecordsView);
     } else {
       button.textContent = item.label;
       button.addEventListener("click", () => switchView(view));
@@ -4589,7 +4617,8 @@ window.addEventListener("DOMContentLoaded", async () => {
   headerPhoneSearch.addEventListener("input", handleSearchInput);
   headerPhoneSearch.addEventListener("search", handleSearchInput);
   logoutButton.addEventListener("click", logout);
-  document.querySelector("#brand-title-btn")?.addEventListener("click", () => switchView("records"));
+  document.querySelector("#brand-title-btn")?.addEventListener("click", openDefaultRecordsView);
+  document.querySelector("#brand-mark-btn")?.addEventListener("click", openDefaultRecordsView);
   document.querySelector("#sync-run-btn")?.addEventListener("click", syncPendingRecords);
   syncButton.addEventListener("click", syncPendingRecords);
   window.addEventListener("offline", () => {
