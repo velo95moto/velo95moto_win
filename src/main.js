@@ -861,10 +861,90 @@ function fillSelect(select, items, placeholder) {
   }
 }
 
+function normalizeMasterFilterName(name) {
+  return String(name || "").trim().replace(/\s+/g, " ").toLocaleLowerCase("ru-RU").replace(/ё/g, "е");
+}
+
+function formatMasterFilterLabel(name) {
+  return String(name || "").trim().replace(/\s+/g, " ");
+}
+
+function sortMasterFilterItems(items) {
+  return [...items].sort((a, b) => (
+    normalizeMasterFilterName(a.label).localeCompare(normalizeMasterFilterName(b.label), "ru")
+  ));
+}
+
+function buildMasterFilterGroups(activeMasters = state.bootstrap?.masters || [], selectedMaster = masterFilter?.value || "") {
+  const recordMastersByKey = new Map();
+  const recordMasterNames = [...new Set(
+    (state.records || [])
+      .map((record) => record.master)
+      .filter((name) => String(name || "").trim())
+  )].sort((a, b) => normalizeMasterFilterName(a).localeCompare(normalizeMasterFilterName(b), "ru"));
+
+  for (const name of recordMasterNames) {
+    const key = normalizeMasterFilterName(name);
+    if (key && !recordMastersByKey.has(key)) recordMastersByKey.set(key, name);
+  }
+
+  const selectedKey = normalizeMasterFilterName(selectedMaster);
+  const currentMastersByKey = new Map();
+  for (const item of activeMasters || []) {
+    const rawValue = item.value || item.label || item;
+    const label = formatMasterFilterLabel(item.label || item.value || item);
+    const key = normalizeMasterFilterName(rawValue || label);
+    if (!key || currentMastersByKey.has(key)) continue;
+    currentMastersByKey.set(key, {
+      value: recordMastersByKey.get(key) || rawValue || label,
+      label,
+      selected: key === selectedKey,
+    });
+  }
+
+  const former = [];
+  for (const [key, value] of recordMastersByKey.entries()) {
+    if (currentMastersByKey.has(key)) continue;
+    former.push({
+      value,
+      label: formatMasterFilterLabel(value),
+      selected: key === selectedKey,
+    });
+  }
+
+  return {
+    current: sortMasterFilterItems(currentMastersByKey.values()),
+    former: sortMasterFilterItems(former),
+  };
+}
+
+function appendMasterFilterGroup(select, label, items) {
+  if (!items.length) return;
+  const group = document.createElement("optgroup");
+  group.label = label;
+  for (const item of items) {
+    const option = document.createElement("option");
+    option.value = item.value;
+    option.textContent = item.label;
+    option.selected = item.selected;
+    group.append(option);
+  }
+  select.append(group);
+}
+
+function fillRecordMasterFilter(activeMasters = state.bootstrap?.masters || []) {
+  if (!masterFilter) return;
+  const selectedMaster = masterFilter.value;
+  masterFilter.innerHTML = '<option value="">Выбрать мастера</option>';
+  const groups = buildMasterFilterGroups(activeMasters, selectedMaster);
+  appendMasterFilterGroup(masterFilter, "Актуальные мастера", groups.current);
+  appendMasterFilterGroup(masterFilter, "Бывшие / неактуальные мастера", groups.former);
+}
+
 function fillMasterFilters(items) {
   fillSelect(masterSelect, items, "— Выберите мастера —");
   fillSelect(editMasterSelect, items, "— Выберите мастера —");
-  fillSelect(masterFilter, items, "Выбрать мастера");
+  fillRecordMasterFilter(items);
 }
 
 function fillDatalist(datalist, items) {
@@ -1668,6 +1748,7 @@ async function loadRecords() {
   const rows = await invoke("list_records");
   const shouldApplyDefaultDate = !state.datesInitialized || !state.recordsFiltersDirty;
   state.records = rows;
+  fillRecordMasterFilter();
   if (shouldApplyDefaultDate) {
     applyDefaultRecordsDate();
   }
