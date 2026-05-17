@@ -5410,6 +5410,34 @@ function initEmpAddModal() {
 // ── ЖУРНАЛ ДЕЙСТВИЙ ──────────────────────────────────────────────────────────
 
 let auditCurrentPage = 1;
+const AUDIT_ROLE_VIEW_ONLY = "Вело95Мото";
+const AUDIT_ACTION_LABELS = {
+  add: "Создание",
+  create: "Создание",
+  change: "Изменение",
+  update: "Изменение",
+  edit: "Изменение",
+  delete: "Удаление",
+  remove: "Удаление",
+  view: "Просмотр",
+};
+
+function auditActionLabel(action, fallback = "") {
+  const value = String(action || "");
+  return fallback || AUDIT_ACTION_LABELS[value] || value;
+}
+
+function canDisplayAuditLog(log) {
+  if (!state.bootstrap?.roles?.is_operator_role) return true;
+  const roles = Array.isArray(log?.user_roles) ? log.user_roles : [];
+  return !roles.includes(AUDIT_ROLE_VIEW_ONLY);
+}
+
+function canDisplayAuditUser(user) {
+  if (!state.bootstrap?.roles?.is_operator_role) return true;
+  const roles = Array.isArray(user?.roles) ? user.roles : [];
+  return !roles.includes(AUDIT_ROLE_VIEW_ONLY);
+}
 
 function initAuditView() {
   document.querySelector("#audit-search-btn").addEventListener("click", () => { auditCurrentPage = 1; loadAuditLog(); });
@@ -5437,8 +5465,9 @@ async function loadAuditLog() {
   setAdminStatus(statusEl, "Загружаю...");
   try {
     const data = await apiRequest("GET", qs);
-    fillAuditFilters(data.users || [], data.actions || []);
-    renderAuditTable(data.logs || []);
+    const logs = (data.logs || []).filter(canDisplayAuditLog);
+    fillAuditFilters((data.users || []).filter(canDisplayAuditUser), data.actions || []);
+    renderAuditTable(logs);
     renderAuditPagination(data.current_page, data.pages, data.total);
     setAdminStatus(statusEl, `Всего записей: ${data.total || 0}`);
   } catch (err) {
@@ -5464,7 +5493,7 @@ function fillAuditFilters(users, actions) {
   actions.forEach(a => {
     const opt = document.createElement("option");
     opt.value = a.value;
-    opt.textContent = a.label;
+    opt.textContent = auditActionLabel(a.value, a.label);
     if (a.value === curAction) opt.selected = true;
     actionSel.append(opt);
   });
@@ -5484,7 +5513,7 @@ function renderAuditTable(logs) {
     tr.innerHTML = `
       <td class="text-muted">${dateStr}</td>
       <td>${log.username || "—"}</td>
-      <td><span class="audit-badge">${log.action_label || log.action}</span></td>
+      <td><span class="audit-badge">${auditActionLabel(log.action, log.action_label)}</span></td>
       <td>${log.description}</td>
       <td class="text-muted">${log.ip_address || "—"}</td>
     `;
