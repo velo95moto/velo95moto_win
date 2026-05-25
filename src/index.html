@@ -1057,6 +1057,21 @@
           <div id="emp-modal-status" class="page-status" aria-live="polite"></div>
         </dialog>
 
+        <!-- Модал отчёта по сотруднику -->
+        <dialog id="emp-report-modal" class="record-dialog emp-report-dialog">
+          <div class="dialog-head">
+            <span id="erm-title" class="erm-dialog-title">Отчёт по сотруднику</span>
+            <button type="button" id="erm-close">×</button>
+          </div>
+          <div class="erm-period-bar">
+            <label class="erm-date-label"><span>С</span><input type="date" id="erm-date-from" /></label>
+            <label class="erm-date-label"><span>По</span><input type="date" id="erm-date-to" /></label>
+            <button type="button" id="erm-load-btn" class="round-action success-button erm-ok-btn">OK</button>
+          </div>
+          <div id="erm-status" class="page-status"></div>
+          <div id="erm-body" class="erm-body"></div>
+        </dialog>
+
         <!-- Модал добавления сотрудника -->
         <dialog id="emp-add-modal" class="record-dialog wide-dialog">
           <form id="emp-add-form">

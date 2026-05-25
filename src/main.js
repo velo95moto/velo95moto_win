@@ -179,6 +179,7 @@ const state = {
   records: [],
   assemblyOrders: [],
   employeeAdvances: [],
+  employeesBalance: [],
   dailyTimesheet: {
     date: "",
     employees: [],
@@ -2181,6 +2182,10 @@ function renderAdvances() {
     advancesFilterEmpty.textContent = names.length ? "По запросу сотрудников не найдено." : "Нет активных сотрудников.";
   }
 
+  const balanceMap = new Map(
+    (state.employeesBalance || []).map((b) => [b.full_name, b])
+  );
+
   advancesList.innerHTML = groups.map((group, index) => {
     const inputId = `advance-input-${index}`;
     const chips = group.rows.map((row) => `
@@ -2189,6 +2194,17 @@ function renderAdvances() {
         <button type="button" class="adv-chip-delete" data-advance-id="${row.local_id}" title="Удалить аванс">×</button>
       </span>
     `).join("");
+
+    const bal = balanceMap.get(group.name);
+    let limitBanner = "";
+    if (bal) {
+      if (bal.advance_status === "positive") {
+        limitBanner = `<div class="adv-limit-banner adv-limit-ok">💡 В день может взять аванс: ${formatMoney(bal.daily_limit)} ₽</div>`;
+      } else if (bal.advance_status === "negative") {
+        limitBanner = `<div class="adv-limit-banner adv-limit-blocked">⚠ Аванс выдавать нельзя — сотрудник в минусе</div>`;
+      }
+    }
+
     return `
       <article class="adv-card" data-employee-name="${escapeHtml(group.name)}">
         <div class="adv-card-top">
@@ -2198,6 +2214,7 @@ function renderAdvances() {
             <span class="adv-total-value ${group.total ? "" : "is-zero"}">${formatMoney(group.total)} ₽</span>
           </div>
         </div>
+        ${limitBanner}
         <div class="adv-history">${chips}</div>
         <div class="adv-input-row">
           <div class="adv-input-wrap">
@@ -2235,6 +2252,16 @@ async function loadAdvancesView() {
     }
     state.employeeAdvances = await invoke("list_employee_advances", { date: today });
     console.debug(`[advances] loaded ${state.employeeAdvances.length} rows for ${today} in ${Math.round(performance.now() - t0)}ms (local DB only)`);
+    // Загружаем балансы сотрудников с сервера (лимиты авансов)
+    if (hasSyncCredentials()) {
+      try {
+        const balData = await apiRequest("GET", `mobile/advances/?date=${today}`);
+        state.employeesBalance = balData.employees_balance || [];
+      } catch (balErr) {
+        console.warn("[advances] balance fetch skipped:", balErr);
+        state.employeesBalance = [];
+      }
+    }
     renderAdvances();
     refreshAdvanceEmployeeCache();
     loadAdvanceDebtPanels();
@@ -5002,6 +5029,7 @@ let buhWeekdays = [];
 function initTimesheetView() {
   initInlineEmployeeForm();
   initEmpModal();
+  initEmpReportModal();
   initDebtPanels();
 }
 
@@ -5142,16 +5170,25 @@ function renderBuhTable(employees) {
       <td class="text-muted">${emp.current_salary || 0} ₽</td>
       <td class="text-muted">${emp.day_off_label || "—"}</td>
       <td class="text-muted">${emp.monthly_accrual || 0} ₽</td>
-      <td><button class="ts-gear-btn" data-emp-id="${emp.id}" title="Настройки">⚙</button></td>
+      <td class="erm-actions-cell">
+        <button class="ts-gear-btn" data-emp-id="${emp.id}" title="Настройки">⚙</button>
+        <button class="ts-report-btn" data-emp-id="${emp.id}" data-emp-name="${escapeHtml(emp.full_name)}" title="Отчёт по сотруднику">📋</button>
+      </td>
     `;
     tbody.append(tr);
   }
 
   tbody.addEventListener("click", (e) => {
-    const btn = e.target.closest(".ts-gear-btn");
-    if (!btn) return;
-    const emp = buhEmployeeMap[parseInt(btn.dataset.empId, 10)];
-    if (emp) openEmpModal(emp);
+    const gearBtn = e.target.closest(".ts-gear-btn");
+    if (gearBtn) {
+      const emp = buhEmployeeMap[parseInt(gearBtn.dataset.empId, 10)];
+      if (emp) openEmpModal(emp);
+      return;
+    }
+    const reportBtn = e.target.closest(".ts-report-btn");
+    if (reportBtn) {
+      openEmpReportModal(parseInt(reportBtn.dataset.empId, 10), reportBtn.dataset.empName);
+    }
   });
 }
 
@@ -5387,6 +5424,201 @@ function renderEmpSalaryHistory(items) {
     items.map(h =>
       `<div class="emp-history-item"><span class="emp-history-date">${h.effective_from}</span><span class="emp-history-val">${h.salary} ₽</span></div>`
     ).join("");
+}
+
+// ── ОТЧЁТ ПО СОТРУДНИКУ ───────────────────────────────────────────────────────
+
+function initEmpReportModal() {
+  const modal = document.querySelector("#emp-report-modal");
+  if (!modal) return;
+  document.querySelector("#erm-close").addEventListener("click", () => modal.close());
+  document.querySelector("#erm-load-btn").addEventListener("click", () => {
+    const empId = parseInt(modal.dataset.empId, 10);
+    const dateFrom = document.querySelector("#erm-date-from").value;
+    const dateTo   = document.querySelector("#erm-date-to").value;
+    if (empId && dateFrom && dateTo) loadEmpReport(empId, dateFrom, dateTo);
+  });
+}
+
+function openEmpReportModal(empId, empName) {
+  const modal = document.querySelector("#emp-report-modal");
+  if (!modal) return;
+  modal.dataset.empId = empId;
+  document.querySelector("#erm-title").textContent = empName;
+
+  const today = todayIsoDate();
+  const fromDefault = today.slice(0, 8) + "01";
+  document.querySelector("#erm-date-from").value = fromDefault;
+  document.querySelector("#erm-date-to").value   = today;
+
+  setAdminStatus(document.querySelector("#erm-status"), "");
+  document.querySelector("#erm-body").innerHTML =
+    '<div class="erm-hint-text">Выберите период и нажмите OK</div>';
+
+  modal.showModal();
+}
+
+async function loadEmpReport(empId, dateFrom, dateTo) {
+  const statusEl = document.querySelector("#erm-status");
+  const bodyEl   = document.querySelector("#erm-body");
+  setAdminStatus(statusEl, "Загружаю...");
+  bodyEl.innerHTML = "";
+  try {
+    const data = await apiRequest("GET", `mobile/employees/${empId}/report/?date_from=${dateFrom}&date_to=${dateTo}`);
+    if (!data.ok) {
+      setAdminStatus(statusEl, "Ошибка загрузки данных", true);
+      return;
+    }
+    setAdminStatus(statusEl, "");
+    bodyEl.innerHTML = renderEmpReportContent(data);
+  } catch (err) {
+    setAdminStatus(statusEl, `Ошибка: ${err}`, true);
+  }
+}
+
+function renderEmpReportContent(data) {
+  const rows = data.rows || [];
+  const t    = data.totals || {};
+
+  if (!rows.length) {
+    return '<div class="erm-empty">Нет событий за выбранный период</div>';
+  }
+
+  function fmtM(v) { return `${formatMoney(Math.abs(v || 0))} ₽`; }
+  function signedM(v) {
+    const s = `${formatMoney(Math.abs(v || 0))} ₽`;
+    return (v || 0) >= 0 ? `+${s}` : `−${s}`;
+  }
+  // Приглушённый баланс для информационных строк (без финансового изменения)
+  function signedMuted(v) {
+    const s = `${formatMoney(Math.abs(v || 0))} ₽`;
+    const sign = (v || 0) >= 0 ? "+" : "−";
+    return `<span class="erm-bal-muted">${sign}${s}</span>`;
+  }
+
+  // Строки, где баланс не меняется (информационные)
+  function isInfoRow(row) {
+    return row.type === "advance"
+      || row.type === "salary_change"
+      || row.type === "hired"
+      || (row.type === "entry" && !row.accrued && !row.advance);
+  }
+
+  function typeInfo(row) {
+    switch (row.type) {
+      case "entry":        return (row.accrued || row.advance)
+                                    ? ["erm-type-work", "Рабочий день"]
+                                    : ["erm-type-weekend", "Выходной"];
+      case "salary_change":return ["erm-type-salary", "Оклад"];
+      case "debt_given":   return ["erm-type-debt-neg", "Долг −"];
+      case "debt_returned":return ["erm-type-debt-pos", "Долг +"];
+      case "advance":      return ["erm-type-advance", "Аванс *"];
+      case "hired":        return ["erm-type-hired", "Принят"];
+      default:             return ["erm-type-other", row.title || "—"];
+    }
+  }
+
+  const rowsHtml = rows.map(row => {
+    const [typeClass, typeLabel] = typeInfo(row);
+
+    let descHtml = "";
+    if (row.description) descHtml += `<div class="erm-desc-text">${escapeHtml(row.description)}</div>`;
+    if (row.type === "entry" && (row.accrued || row.advance)) {
+      descHtml += `<div class="erm-detail-text">Нач: ${fmtM(row.accrued)}${row.advance > 0 ? ` · Ав: −${fmtM(row.advance)}` : ""}</div>`;
+    } else if ((row.type === "debt_given" || row.type === "debt_returned") && row.amount > 0) {
+      descHtml += `<div class="erm-detail-text">${fmtM(row.amount)}</div>`;
+    } else if (row.type === "advance" && row.amount > 0) {
+      descHtml += `<div class="erm-detail-text erm-detail-muted" title="Зафиксирован на стр. «Авансы». В баланс входит через табель.">${fmtM(row.amount)} *</div>`;
+    } else if (row.type === "salary_change" && row.salary > 0) {
+      descHtml += `<div class="erm-detail-text">Оклад: ${fmtM(row.salary)}</div>`;
+    }
+
+    // Баланс после: цветной для финансовых строк, серый для информационных
+    const balVal = row.balance_after || 0;
+    const balHtml = isInfoRow(row)
+      ? signedMuted(balVal)
+      : `<span class="${balVal >= 0 ? "erm-bal-pos" : "erm-bal-neg"}">${signedM(balVal)}</span>`;
+
+    let debtHtml = "—";
+    if (row.type === "debt_given"    && row.amount > 0) debtHtml = `<span class="erm-bal-neg">−${fmtM(row.amount)}</span>`;
+    else if (row.type === "debt_returned" && row.amount > 0) debtHtml = `<span class="erm-bal-pos">+${fmtM(row.amount)}</span>`;
+
+    // Аванс из табеля — оранжевый (реальный вычет)
+    // Отдельный аванс — серый (информационный, показывается в descHtml)
+    const accruedHtml = (row.type === "entry" && row.accrued > 0) ? `+${fmtM(row.accrued)}` : "—";
+    const advHtml     = (row.type === "entry" && row.advance > 0) ? `−${fmtM(row.advance)}` : "—";
+
+    return `<tr>
+      <td class="erm-col-date">${escapeHtml(row.date)}</td>
+      <td class="erm-col-type"><span class="${typeClass}">${escapeHtml(typeLabel)}</span></td>
+      <td class="erm-col-desc">${descHtml}</td>
+      <td class="erm-col-num">${accruedHtml}</td>
+      <td class="erm-col-num">${advHtml}</td>
+      <td class="erm-col-num">${debtHtml}</td>
+      <td class="erm-col-bal">${balHtml}</td>
+    </tr>`;
+  }).join("");
+
+  const totalsItems = [
+    ["Начислено",          fmtM(t.total_accrued),                    "erm-tot-green"],
+    t.total_side_job > 0     ? ["Подработка",     fmtM(t.total_side_job),             "erm-tot-green"]  : null,
+    t.total_bonus > 0        ? ["Доплата",         fmtM(t.total_bonus),                "erm-tot-green"]  : null,
+    t.total_penalty > 0      ? ["Штрафы",          fmtM(t.total_penalty),              "erm-tot-red"]    : null,
+    ["Авансы (табель)",    `−${fmtM(t.total_advances_timesheet)}`,   "erm-tot-orange"],
+    t.total_standalone_advances > 0 ? ["Авансы (стр.)*", fmtM(t.total_standalone_advances), "erm-tot-muted"] : null,
+    t.total_debt_given > 0   ? ["Долг выдан",     `−${fmtM(t.total_debt_given)}`,     "erm-tot-red"]    : null,
+    t.total_debt_returned > 0 ? ["Долг возврат.",  `+${fmtM(t.total_debt_returned)}`,  "erm-tot-green"]  : null,
+  ].filter(Boolean);
+
+  const totalsHtml = totalsItems.map(([label, value, cls]) =>
+    `<div class="erm-tot-item"><div class="erm-tot-label">${escapeHtml(label)}</div><div class="erm-tot-value ${cls}">${escapeHtml(value)}</div></div>`
+  ).join("");
+
+  const openBalClass  = (t.opening_balance || 0) >= 0 ? "erm-bal-pos" : "erm-bal-neg";
+  const closeBalClass = (t.closing_balance  || 0) >= 0 ? "erm-bal-pos" : "erm-bal-neg";
+
+  const standaloneNote = t.total_standalone_advances > 0
+    ? `<div class="erm-note">* — Аванс зафиксирован на странице «Авансы» до заполнения табеля. В баланс входит через поле «аванс» при сохранении табеля того дня.</div>`
+    : "";
+
+  return `
+    <div class="erm-table-wrap">
+      <table class="erm-table">
+        <colgroup>
+          <col style="width:82px">
+          <col style="width:110px">
+          <col>
+          <col style="width:80px">
+          <col style="width:72px">
+          <col style="width:76px">
+          <col style="width:90px">
+        </colgroup>
+        <thead>
+          <tr>
+            <th>Дата</th><th>Событие</th><th>Описание</th>
+            <th>Начислено</th><th>Аванс</th><th>Долг</th><th>Баланс после</th>
+          </tr>
+        </thead>
+        <tbody>${rowsHtml}</tbody>
+      </table>
+    </div>
+    <div class="erm-totals">
+      <div class="erm-totals-title">Итоги за период</div>
+      <div class="erm-totals-grid">${totalsHtml}</div>
+    </div>
+    <div class="erm-balance-row">
+      <div>
+        <div class="erm-bal-label">Входящий баланс</div>
+        <div class="erm-bal-big ${openBalClass}">${signedM(t.opening_balance || 0)}</div>
+      </div>
+      <div class="erm-bal-arrow">→</div>
+      <div style="text-align:right">
+        <div class="erm-bal-label">Исходящий баланс</div>
+        <div class="erm-bal-big ${closeBalClass}">${signedM(t.closing_balance || 0)}</div>
+      </div>
+    </div>
+    ${standaloneNote}
+  `;
 }
 
 async function openEmpAddModal() {
