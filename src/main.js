@@ -2759,6 +2759,10 @@ function journalCell(entry) {
 
 function buildJournalRows(summaryData, monthData, previousSummaryData = null) {
   const days = monthDays(summaryData.month);
+  const holidayDates = new Set(summaryData.holidays || monthData.holidays || []);
+  days.forEach((day) => {
+    day.isHoliday = holidayDates.has(day.iso);
+  });
   const entries = entryByEmployeeAndDay(monthData.entries || []);
   const previousRows = [
     ...(previousSummaryData?.active_employees || []),
@@ -2842,7 +2846,7 @@ function renderJournal() {
     <tr>
       <th class="sticky-left summary6-index">№</th>
       <th class="sticky-left second summary6-name">ФИО</th>
-      ${days.map((day, dayIndex) => `<th class="summary6-day-header ${emptyDayIndexes[dayIndex] ? "is-empty-day" : ""}"><span class="summary6-day-number">${day.day}</span><span class="summary6-day-weekday">${escapeHtml(day.weekday)}</span></th>`).join("")}
+      ${days.map((day, dayIndex) => `<th class="summary6-day-header ${emptyDayIndexes[dayIndex] ? "is-empty-day" : ""} ${day.isHoliday ? "is-paid-holiday" : ""}" ${day.isHoliday ? 'title="Праздничный день"' : ""}><span class="summary6-day-number">${day.day}${day.isHoliday ? '<span class="summary6-holiday-mark">*</span>' : ""}</span><span class="summary6-day-weekday">${escapeHtml(day.weekday)}</span></th>`).join("")}
     </tr>
   `;
   if (!rows.length) {
@@ -5025,12 +5029,16 @@ let buhEmployeeMap = {};
 let buhPositions = [];
 let buhDepartments = [];
 let buhWeekdays = [];
+let buhHolidayMonth = "";
+let buhHolidayDates = new Set();
+let buhHolidayMonthClosed = false;
 
 function initTimesheetView() {
   initInlineEmployeeForm();
   initEmpModal();
   initEmpReportModal();
   initDebtPanels();
+  initPaidHolidayModal();
 }
 
 function initDebtPanels() {
@@ -5097,8 +5105,12 @@ async function loadBuhgalteria() {
     buhPositions = data.positions || [];
     buhDepartments = data.departments || [];
     buhWeekdays = data.weekdays || [];
+    buhHolidayMonth = monthValue(data.date || today);
+    buhHolidayDates = new Set(data.holidays || []);
+    buhHolidayMonthClosed = Boolean(data.holiday_month_closed);
     const employees = data.employees || [];
     renderBuhTable(employees);
+    renderPaidHolidaySummary();
     updateDebtSelects(employees);
     const info = `Сотрудников: ${employees.length}` + (data.archived_count > 0 && !buhShowArchived ? ` (архив: ${data.archived_count})` : "");
     setAdminStatus(statusEl, info);
@@ -5143,6 +5155,75 @@ function updateDebtSelects(employees) {
     opt.disabled = true;
     returnSelect.appendChild(opt);
   }
+}
+
+function renderPaidHolidaySummary() {
+  const summary = document.querySelector("#paid-holidays-summary");
+  if (!summary) return;
+  const dates = Array.from(buhHolidayDates).sort();
+  summary.textContent = dates.length
+    ? `Выбрано: ${dates.map((d) => Number(d.slice(8, 10))).join(", ")}`
+    : "Праздники не выбраны";
+  summary.classList.toggle("is-closed", buhHolidayMonthClosed);
+  if (buhHolidayMonthClosed) summary.textContent += ". Месяц закрыт";
+}
+
+function renderPaidHolidayModal() {
+  const grid = document.querySelector("#paid-holidays-grid");
+  const title = document.querySelector("#paid-holidays-title");
+  const status = document.querySelector("#paid-holidays-status");
+  const saveBtn = document.querySelector("#paid-holidays-save");
+  if (!grid) return;
+  const month = buhHolidayMonth || monthValue(todayIsoDate());
+  if (title) title.textContent = `Оплачиваемые праздники: ${month}`;
+  if (status) {
+    status.textContent = buhHolidayMonthClosed ? "Месяц закрыт. Праздники менять нельзя." : "";
+    status.className = "page-status" + (status.textContent ? " is-visible is-error" : "");
+  }
+  if (saveBtn) saveBtn.disabled = buhHolidayMonthClosed;
+  grid.innerHTML = monthDays(month).map((day) => `
+    <label class="paid-holiday-day">
+      <input type="checkbox" value="${day.iso}" ${buhHolidayDates.has(day.iso) ? "checked" : ""} ${buhHolidayMonthClosed ? "disabled" : ""}>
+      <span>${day.day}</span>
+      <span>${escapeHtml(day.weekday)}</span>
+    </label>
+  `).join("");
+}
+
+function initPaidHolidayModal() {
+  const modal = document.querySelector("#paid-holidays-modal");
+  const openBtn = document.querySelector("#paid-holidays-open");
+  const closeBtn = document.querySelector("#paid-holidays-close");
+  const cancelBtn = document.querySelector("#paid-holidays-cancel");
+  const form = document.querySelector("#paid-holidays-form");
+  if (!modal || !openBtn || !form) return;
+
+  openBtn.addEventListener("click", () => {
+    renderPaidHolidayModal();
+    modal.showModal();
+  });
+  closeBtn?.addEventListener("click", () => modal.close());
+  cancelBtn?.addEventListener("click", () => modal.close());
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (buhHolidayMonthClosed) return;
+    const dates = Array.from(form.querySelectorAll('input[type="checkbox"]:checked')).map((input) => input.value);
+    const status = document.querySelector("#paid-holidays-status");
+    setAdminStatus(status, "Сохраняю праздники...");
+    try {
+      const result = await apiRequest("POST", "mobile/paid-holidays/", {
+        month: buhHolidayMonth || monthValue(todayIsoDate()),
+        dates,
+      });
+      buhHolidayDates = new Set((result.holidays || []).map((item) => item.date));
+      showToast(result.message || "Праздничные дни сохранены.");
+      modal.close();
+      await loadBuhgalteria();
+      if (state.currentView === "journal") await loadJournalView();
+    } catch (err) {
+      setAdminStatus(status, `Ошибка: ${err}`, true);
+    }
+  });
 }
 
 function renderBuhTable(employees) {

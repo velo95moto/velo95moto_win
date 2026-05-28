@@ -763,6 +763,11 @@
         </section>
         <div id="buh-status" class="page-status" aria-live="polite"></div>
 
+        <div class="paid-holidays-toolbar">
+          <button type="button" class="round-action" id="paid-holidays-open">Праздничные дни</button>
+          <span id="paid-holidays-summary" class="paid-holidays-summary">Праздники не выбраны</span>
+        </div>
+
         <!-- Дали в долг / Возврат долга -->
         <div class="debt-panels">
           <details class="debt-panel" id="debt-issue-panel">
@@ -952,6 +957,22 @@
             </table>
           </div>
         </section>
+
+        <dialog id="paid-holidays-modal" class="record-dialog paid-holidays-dialog">
+          <form id="paid-holidays-form">
+            <div class="dialog-head">
+              <h2 id="paid-holidays-title">Оплачиваемые праздники</h2>
+              <button type="button" id="paid-holidays-close">×</button>
+            </div>
+            <div id="paid-holidays-status" class="page-status" aria-live="polite"></div>
+            <div id="paid-holidays-grid" class="paid-holiday-grid"></div>
+            <p class="paid-holiday-note">После сохранения сайт пересчитает табель, журнал и данные для desktop.</p>
+            <div class="dialog-actions">
+              <button type="button" class="secondary-button" id="paid-holidays-cancel">Отмена</button>
+              <button type="submit" class="success-button" id="paid-holidays-save">Сохранить</button>
+            </div>
+          </form>
+        </dialog>
 
         <!-- Модал карточки сотрудника -->
         <dialog id="emp-settings-modal" class="record-dialog wide-dialog">
