@@ -2743,6 +2743,25 @@ function entryByEmployeeAndDay(entries) {
 function journalCell(entry) {
   if (!entry) return { value: "", cls: "is-empty", detail: "" };
   const parts = [];
+  const holidayBreakdown = Array.isArray(entry.holiday_pay_breakdown)
+    ? entry.holiday_pay_breakdown
+    : [];
+  const fallbackHolidayPay = Number(entry.holiday_pay_amount || 0);
+  const holidayItems = holidayBreakdown.length
+    ? holidayBreakdown
+    : (fallbackHolidayPay > 0
+      ? [{
+          label: entry.status === "present" ? "Работа в праздничный день" : "Оплачиваемый праздничный день",
+          amount: fallbackHolidayPay,
+        }]
+      : []);
+  const holidayPay = holidayItems.reduce((sum, item) => sum + Number(item.amount || 0), 0);
+  for (const item of holidayItems) {
+    const amount = Number(item.amount || 0);
+    if (amount > 0) {
+      parts.push(`<span class="summary6-hover-row"><span class="summary6-hover-label">${escapeHtml(item.label || "Праздничное начисление")}</span><span class="summary6-hover-value">+${formatMoney(amount)} ₽</span></span>`);
+    }
+  }
   if (entry.is_late) parts.push(`<span class="summary6-hover-row"><span class="summary6-hover-label">Опоздание</span><span class="summary6-hover-value${entry.late_penalty ? " is-debt" : ""}">${entry.late_penalty ? `−${formatMoney(entry.late_penalty)} ₽` : "без штрафа"}</span></span>`);
   if (entry.advance) parts.push(`<span class="summary6-hover-row"><span class="summary6-hover-label">Аванс</span><span class="summary6-hover-value">${formatMoney(entry.advance)} ₽</span></span>`);
   if (entry.side_job) parts.push(`<span class="summary6-hover-row"><span class="summary6-hover-label">Подработка</span><span class="summary6-hover-value">${formatMoney(entry.side_job)} ₽</span></span>`);
@@ -2752,9 +2771,11 @@ function journalCell(entry) {
     baseCls,
     entry.advance ? "has-advance" : "",
     entry.side_job ? "has-side-job" : "",
+    holidayPay > 0 ? "has-holiday-pay" : "",
   ].filter(Boolean).join(" ");
   const detail = parts.length ? `<span class="summary6-hover-card summary6-cell-detail-card"><span class="summary6-hover-title">Подробности дня</span><span class="summary6-hover-grid">${parts.join("")}</span></span>` : "";
-  return { value: entry.status === "weekend" ? "В" : "+", cls, detail };
+  const mark = holidayPay > 0 ? '<span class="summary6-holiday-pay-mark">✦</span>' : "";
+  return { value: `${entry.status === "weekend" ? "В" : "+"}${mark}`, cls, detail };
 }
 
 function buildJournalRows(summaryData, monthData, previousSummaryData = null) {
@@ -4340,9 +4361,115 @@ window.__VELO_LOGIN_SUBMIT__ = login;
 window.__VELO_LOGIN_READY__ = true;
 attachLoginHandler();
 
+function initFloatingHoverCards() {
+  const triggerSelector = ".summary6-name-anchor, .summary6-cell-anchor, .summary6-trend-anchor";
+  let activeTrigger = null;
+  let floatingCard = null;
+
+  document.documentElement.classList.add("js-floating-tooltips");
+
+  const getTrigger = (target) => {
+    if (!target || !target.closest) return null;
+    return target.closest(triggerSelector);
+  };
+
+  const removeFloatingCard = () => {
+    activeTrigger = null;
+    if (floatingCard) {
+      floatingCard.remove();
+      floatingCard = null;
+    }
+  };
+
+  const positionFloatingCard = () => {
+    if (!floatingCard || !activeTrigger || !activeTrigger.isConnected) {
+      removeFloatingCard();
+      return;
+    }
+
+    const margin = 12;
+    const gap = 8;
+    const rect = activeTrigger.getBoundingClientRect();
+
+    floatingCard.style.left = "0px";
+    floatingCard.style.top = "0px";
+    floatingCard.style.visibility = "hidden";
+
+    const cardRect = floatingCard.getBoundingClientRect();
+    let left = rect.left;
+    let top = rect.bottom + gap;
+
+    if (left + cardRect.width > window.innerWidth - margin) {
+      left = window.innerWidth - cardRect.width - margin;
+    }
+    if (left < margin) left = margin;
+
+    if (top + cardRect.height > window.innerHeight - margin) {
+      top = rect.top - cardRect.height - gap;
+    }
+    if (top < margin) top = margin;
+
+    floatingCard.style.left = `${Math.round(left)}px`;
+    floatingCard.style.top = `${Math.round(top)}px`;
+    floatingCard.style.visibility = "visible";
+  };
+
+  const showFloatingCard = (trigger) => {
+    const source = trigger?.querySelector(".summary6-hover-card");
+    if (!source) {
+      removeFloatingCard();
+      return;
+    }
+
+    if (trigger === activeTrigger && floatingCard) {
+      positionFloatingCard();
+      return;
+    }
+
+    removeFloatingCard();
+    activeTrigger = trigger;
+    floatingCard = source.cloneNode(true);
+    floatingCard.classList.add("is-floating");
+    floatingCard.setAttribute("aria-hidden", "true");
+    document.body.appendChild(floatingCard);
+    positionFloatingCard();
+  };
+
+  document.addEventListener("mouseover", (event) => {
+    const trigger = getTrigger(event.target);
+    if (!trigger || trigger.contains(event.relatedTarget)) return;
+    showFloatingCard(trigger);
+  }, true);
+
+  document.addEventListener("mouseout", (event) => {
+    const trigger = getTrigger(event.target);
+    if (!trigger || trigger.contains(event.relatedTarget)) return;
+    removeFloatingCard();
+  }, true);
+
+  document.addEventListener("focusin", (event) => {
+    const trigger = getTrigger(event.target);
+    if (trigger) showFloatingCard(trigger);
+  }, true);
+
+  document.addEventListener("focusout", (event) => {
+    const trigger = getTrigger(event.target);
+    if (!trigger) return;
+    window.setTimeout(() => {
+      if (!document.activeElement || !trigger.contains(document.activeElement)) {
+        removeFloatingCard();
+      }
+    }, 0);
+  }, true);
+
+  document.addEventListener("scroll", positionFloatingCard, true);
+  window.addEventListener("resize", positionFloatingCard);
+}
+
 window.addEventListener("DOMContentLoaded", async () => {
   loadSyncSettings();
   attachLoginHandler();
+  initFloatingHoverCards();
   invoke("get_desktop_log_path").then((path) => {
     auditInfo("desktop_log_ready", "Файл журнала desktop-программы готов.", { path });
   }).catch(() => {});

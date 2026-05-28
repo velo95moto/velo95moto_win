@@ -3050,6 +3050,30 @@ td { background: rgba(255,255,255,0.78); }
   visibility: visible;
 }
 
+.js-floating-tooltips .summary6-hover-card:not(.is-floating) {
+  opacity: 0 !important;
+  visibility: hidden !important;
+}
+
+.summary6-hover-card.is-floating {
+  position: fixed;
+  left: 0;
+  right: auto;
+  top: 0;
+  bottom: auto;
+  z-index: 10000;
+  max-width: min(340px, calc(100vw - 24px));
+  max-height: min(420px, calc(100vh - 24px));
+  overflow-y: auto;
+  opacity: 1 !important;
+  visibility: visible !important;
+  transform: none !important;
+}
+
+.summary6-hover-card.is-floating::before {
+  display: none;
+}
+
 .summary6-hover-title {
   display: block;
   margin-bottom: 10px;
@@ -3188,6 +3212,21 @@ td { background: rgba(255,255,255,0.78); }
   color: rgba(31, 90, 44, 0.7);
   font-size: 10px;
   font-weight: 900;
+}
+
+.summary6-cell.has-holiday-pay {
+  outline: 2px solid rgba(212, 151, 28, 0.2);
+  outline-offset: -2px;
+}
+
+.summary6-holiday-pay-mark {
+  position: absolute;
+  right: 4px;
+  bottom: 2px;
+  color: rgba(179, 107, 0, 0.88);
+  font-size: 11px;
+  font-weight: 900;
+  line-height: 1;
 }
 
 .summary6-cell:has(.summary6-hover-card),
