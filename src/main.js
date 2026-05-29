@@ -14,6 +14,8 @@ import {
 import {
   canShowAssemblyOrderCreate,
   canShowAssemblyOrdersList,
+  canShowAdminHelper,
+  canShowFileExchange,
 } from "./nav-policy.js";
 import { createDesktopLogger } from "./desktop-logger.js";
 import {
@@ -36,6 +38,38 @@ const DEFAULT_SERVER_URL = "https://velo95moto.ru";
 const DATA_PROFILE = "localhost-dev-v1";
 const PRODUCTION_SERVER_URL = "https://velo95moto.ru";
 const UPDATE_CHECK_TIMEOUT_MS = 3500;
+const ADMIN_HELPER_CACHE_KEY = "adminHelperFeatures";
+const ADMIN_HELPER_SYNONYMS = {
+  "зп": ["зарплата", "заработал", "оклад", "начисления", "ставка"],
+  "зарплата": ["зп", "заработал", "оклад", "начисления", "ставка"],
+  "заработал": ["зарплата", "зп", "начисления", "итог"],
+  "оклад": ["зарплата", "зп", "ставка", "начисления"],
+  "начисления": ["зарплата", "заработал", "расчет", "расчёт"],
+  "расчет": ["расчёт", "считать", "посчитать", "сумма", "авторасчет"],
+  "расчёт": ["расчет", "считать", "посчитать", "сумма", "авторасчёт"],
+  "посчитать": ["считать", "расчет", "сумма", "авторасчет"],
+  "считать": ["посчитать", "расчет", "расчёт", "сумма", "авторасчет"],
+  "сумма": ["расчет", "расчёт", "считать", "итог", "начисления"],
+  "авторасчет": ["авторасчёт", "автоматический", "расчет", "сразу", "считать"],
+  "авторасчёт": ["авторасчет", "автоматический", "расчёт", "сразу", "считать"],
+  "настройка": ["параметры", "шестеренка", "шестерёнка", "тумблер", "переключатель"],
+  "шестеренка": ["шестерёнка", "настройка", "параметры", "gear", "сотрудник"],
+  "шестерёнка": ["шестеренка", "настройка", "параметры", "gear", "сотрудник"],
+  "тумблер": ["переключатель", "настройка", "toggle"],
+  "переключатель": ["тумблер", "настройка", "toggle"],
+  "сотрудник": ["мастер", "работник", "персонал"],
+  "мастер": ["сотрудник", "работник", "зарплата"],
+  "выходной": ["в", "отдых", "не работал"],
+  "праздник": ["праздничный", "оплачиваемый", "выходной"],
+  "аванс": ["выдать деньги", "деньги", "выплата"],
+  "журнал": ["итог", "итоговая", "сводка", "баланс"],
+  "итог": ["журнал", "итоговая", "баланс", "сумма"],
+  "табель": ["день", "отметка", "рабочий", "выходной"],
+  "запись": ["ремонт", "заказ", "работа"],
+  "ремонт": ["запись", "заказ", "работа"],
+  "отчет": ["отчёт", "история", "детализация"],
+  "отчёт": ["отчет", "история", "детализация"],
+};
 
 const loginScreen = document.querySelector("#login-screen");
 const appShell = document.querySelector("#app-shell");
@@ -49,6 +83,13 @@ const userChip = document.querySelector("#user-chip");
 const headerSearchForm = document.querySelector("#header-search-form");
 const headerPhoneSearch = document.querySelector("#header-phone-search");
 const logoutButton = document.querySelector("#logout-button");
+const adminHelperOpen = document.querySelector("#admin-helper-open");
+const fileExchangeOpen = document.querySelector("#file-exchange-open");
+const adminHelperPanel = document.querySelector("#admin-helper-panel");
+const adminHelperClose = document.querySelector("#admin-helper-close");
+const adminHelperQuery = document.querySelector("#admin-helper-query");
+const adminHelperStatus = document.querySelector("#admin-helper-status");
+const adminHelperResults = document.querySelector("#admin-helper-results");
 const recordForm = document.querySelector("#record-form");
 const recordsBody = document.querySelector("#records-body");
 const searchRecordsBody = document.querySelector("#search-records-body");
@@ -178,6 +219,7 @@ const state = {
   syncUiMessage: "Ожидание",
   records: [],
   assemblyOrders: [],
+  adminHelperFeatures: [],
   employeeAdvances: [],
   employeesBalance: [],
   dailyTimesheet: {
@@ -374,6 +416,7 @@ function loadSyncSettings() {
     localStorage.removeItem("lastAuthHash");
     localStorage.removeItem("lastAuthUser");
     localStorage.removeItem("lastBootstrap");
+    localStorage.removeItem(ADMIN_HELPER_CACHE_KEY);
     localStorage.setItem("dataProfile", DATA_PROFILE);
   }
   const saved = localStorage.getItem("serverUrl");
@@ -1111,6 +1154,8 @@ function applyBootstrap(bootstrap) {
   const canAdmin   = hasPermission("auth.change_user");
   const canBuh     = Boolean(user.is_superuser);
   const canAudit   = hasPermission("records.view_auditlog");
+  adminHelperOpen?.classList.toggle("is-hidden", !canShowAdminHelper(bootstrap));
+  fileExchangeOpen?.classList.toggle("is-hidden", !canShowFileExchange(bootstrap));
   document.querySelector("#sd-shop")?.classList.toggle("is-hidden", !canShop);
   document.querySelector("#sd-operator")?.classList.toggle("is-hidden", !canOp);
   document.querySelector("#sd-admin")?.classList.toggle("is-hidden", !canAdmin);
@@ -1118,6 +1163,11 @@ function applyBootstrap(bootstrap) {
   document.querySelector("#sd-audit")?.classList.toggle("is-hidden", !canAudit);
   const canSeeSettings = true;
   settingsWrapper.classList.toggle("is-hidden", !canSeeSettings);
+  if (canShowAdminHelper(bootstrap)) {
+    refreshAdminHelperCatalog().catch(() => loadAdminHelperCache());
+  } else {
+    state.adminHelperFeatures = [];
+  }
 }
 
 function hasPermission(permission) {
@@ -1623,6 +1673,8 @@ function logout() {
   appShell.classList.add("is-locked");
   loginScreen.classList.remove("is-hidden");
   loginStatus.textContent = "Вы вышли из аккаунта. Введите логин и пароль.";
+  adminHelperOpen?.classList.add("is-hidden");
+  fileExchangeOpen?.classList.add("is-hidden");
   settingsWrapper.classList.add("is-hidden");
   settingsDropdown.classList.add("is-hidden");
 }
@@ -4466,10 +4518,301 @@ function initFloatingHoverCards() {
   window.addEventListener("resize", positionFloatingCard);
 }
 
+function normalizeAdminHelperText(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/ё/g, "е")
+    .replace(/[^\p{L}\p{N}_\s]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function adminHelperTerms(query) {
+  const terms = normalizeAdminHelperText(query).split(" ").filter(Boolean);
+  const expanded = [];
+  const seen = new Set();
+  for (const term of terms) {
+    const variants = [term, ...(ADMIN_HELPER_SYNONYMS[term] || [])];
+    for (const variant of variants) {
+      const normalized = normalizeAdminHelperText(variant);
+      if (normalized && !seen.has(normalized)) {
+        seen.add(normalized);
+        expanded.push(normalized);
+      }
+    }
+  }
+  return { terms, expanded };
+}
+
+function loadAdminHelperCache() {
+  try {
+    const raw = localStorage.getItem(ADMIN_HELPER_CACHE_KEY) || "[]";
+    const parsed = JSON.parse(raw);
+    state.adminHelperFeatures = Array.isArray(parsed) ? parsed : [];
+  } catch {
+    state.adminHelperFeatures = [];
+  }
+}
+
+function saveAdminHelperCache(items) {
+  state.adminHelperFeatures = Array.isArray(items) ? items : [];
+  localStorage.setItem(ADMIN_HELPER_CACHE_KEY, JSON.stringify(state.adminHelperFeatures));
+}
+
+async function refreshAdminHelperCatalog() {
+  if (!canShowAdminHelper(state.bootstrap)) return [];
+  const data = await apiRequest("GET", "mobile/admin-helper/search/?limit=100");
+  saveAdminHelperCache(data.results || []);
+  return state.adminHelperFeatures;
+}
+
+function localAdminHelperSearch(query) {
+  const normalized = normalizeAdminHelperText(query);
+  const { terms, expanded } = adminHelperTerms(query);
+  const source = state.adminHelperFeatures || [];
+  const scored = [];
+
+  for (const item of source) {
+    const title = normalizeAdminHelperText(item.title);
+    const fields = [
+      [item.title, 120],
+      [item.keywords, 80],
+      [item.category, 45],
+      [item.path_hint, 42],
+      [item.open_hint, 35],
+      [item.description, 28],
+      [item.how_it_works, 24],
+      [(item.related || []).join(" "), 14],
+      [item.feature_type, 10],
+    ];
+    let score = normalized ? 0 : 1;
+    if (normalized && title === normalized) score += 12000;
+    else if (normalized && title.includes(normalized)) score += 4500;
+
+    const matchedTerms = new Set();
+    const matchedExpanded = new Set();
+    for (const [value, weight] of fields) {
+      const haystack = normalizeAdminHelperText(value);
+      if (!haystack) continue;
+      if (normalized && haystack.includes(normalized)) score += weight * 6;
+      for (const term of terms) {
+        if (haystack.includes(term)) {
+          score += weight * 2;
+          matchedTerms.add(term);
+          matchedExpanded.add(term);
+        }
+      }
+      for (const term of expanded) {
+        if (haystack.includes(term)) {
+          score += weight;
+          matchedExpanded.add(term);
+        }
+      }
+    }
+    if (terms.length && matchedTerms.size === terms.length) score += 1800;
+    else if (terms.length) score += Math.floor(700 * (matchedTerms.size / terms.length));
+    if (expanded.length) score += Math.floor(250 * (matchedExpanded.size / expanded.length));
+    score += Number(item.search_weight || 100);
+    if (!normalized || score > Number(item.search_weight || 100)) scored.push({ score, item });
+  }
+
+  return scored
+    .sort((a, b) => b.score - a.score || String(a.item.title).localeCompare(String(b.item.title), "ru"))
+    .slice(0, 12)
+    .map((row) => row.item);
+}
+
+function adminHelperDesktopView(url) {
+  const path = String(url || "").replace(PRODUCTION_SERVER_URL, "");
+  if (path === "/staff/" || path.startsWith("/staff/?")) return "records";
+  if (path.startsWith("/staff/assembly-order/new/")) return "assembly-order";
+  if (path.startsWith("/staff/assembly-orders/")) return "assembly-orders";
+  if (path.startsWith("/staff/assembly/")) return "assembly";
+  if (path.startsWith("/staff/salary/")) return "salary";
+  if (path.startsWith("/staff/advances/")) return "advances";
+  if (path.startsWith("/staff/daily-timesheet/")) return "daily-timesheet";
+  if (path.startsWith("/staff/summary/")) return "journal";
+  if (path.startsWith("/staff/timesheet/")) return "timesheet";
+  if (path.startsWith("/staff/audit-log/")) return "audit";
+  if (path.startsWith("/staff/operator-cabinet/")) return "operator";
+  if (path.startsWith("/staff/user-permissions/")) return "users";
+  if (path.startsWith("/shop/manage/")) return "shop";
+  return "";
+}
+
+function adminHelperSiteUrl(url) {
+  const base = normalizeServerUrl(serverUrlInput.value || loginServerUrlInput.value || PRODUCTION_SERVER_URL);
+  if (!url) return base;
+  if (/^https?:\/\//i.test(url)) return url;
+  return `${base}${url.startsWith("/") ? "" : "/"}${url}`;
+}
+
+function fileExchangeSiteUrl() {
+  return adminHelperSiteUrl("/staff/file-exchange/");
+}
+
+function renderAdminHelperResults(items, query, sourceLabel = "") {
+  if (!adminHelperResults || !adminHelperStatus) return;
+  adminHelperResults.innerHTML = "";
+  if (!query) {
+    adminHelperStatus.textContent = "Введите запрос, чтобы найти функцию.";
+    return;
+  }
+  if (!items.length) {
+    adminHelperStatus.textContent = "Ничего не найдено. Попробуйте другое слово.";
+    return;
+  }
+  adminHelperStatus.textContent = `Найдено: ${items.length}${sourceLabel}`;
+
+  for (const item of items) {
+    const card = document.createElement("article");
+    card.className = "admin-helper-card";
+    const top = document.createElement("div");
+    top.className = "admin-helper-card-top";
+    const titleWrap = document.createElement("div");
+    const title = document.createElement("h3");
+    title.textContent = item.title || "Без названия";
+    titleWrap.append(title);
+    if (item.category) {
+      const category = document.createElement("span");
+      category.className = "admin-helper-category";
+      category.textContent = item.category;
+      titleWrap.append(category);
+    }
+    const openButton = document.createElement("button");
+    openButton.className = "admin-helper-open";
+    openButton.type = "button";
+    const desktopView = adminHelperDesktopView(item.url);
+    openButton.textContent = desktopView ? "Открыть" : "Открыть сайт";
+    openButton.addEventListener("click", async () => {
+      if (desktopView) {
+        closeAdminHelper();
+        switchView(desktopView);
+        return;
+      }
+      await window.__TAURI__.opener.openUrl(adminHelperSiteUrl(item.url));
+    });
+    top.append(titleWrap, openButton);
+    card.append(top);
+    if (item.description) {
+      const description = document.createElement("p");
+      description.textContent = item.description;
+      card.append(description);
+    }
+    if (item.path_hint) {
+      const path = document.createElement("div");
+      path.className = "admin-helper-path";
+      path.textContent = `Где находится: ${item.path_hint}`;
+      card.append(path);
+    }
+    if (item.how_it_works) {
+      const how = document.createElement("p");
+      how.textContent = item.how_it_works;
+      card.append(how);
+    }
+    if (item.open_hint) {
+      const openHint = document.createElement("p");
+      openHint.textContent = item.open_hint;
+      card.append(openHint);
+    }
+    if (!desktopView) {
+      const siteOnly = document.createElement("p");
+      siteOnly.textContent = "Доступно только на сайте.";
+      card.append(siteOnly);
+    }
+    if (item.related?.length) {
+      const related = document.createElement("div");
+      related.className = "admin-helper-related";
+      for (const label of item.related) {
+        const chip = document.createElement("span");
+        chip.textContent = label;
+        related.append(chip);
+      }
+      card.append(related);
+    }
+    adminHelperResults.append(card);
+  }
+}
+
+let adminHelperDebounce = null;
+
+async function searchAdminHelper({ refresh = false } = {}) {
+  const query = adminHelperQuery?.value.trim() || "";
+  if (!query) {
+    renderAdminHelperResults([], "");
+    return;
+  }
+  let sourceLabel = "";
+  try {
+    if (refresh || !state.adminHelperFeatures.length) {
+      adminHelperStatus.textContent = "Обновляю справочник...";
+      await refreshAdminHelperCatalog();
+    }
+  } catch {
+    loadAdminHelperCache();
+    sourceLabel = state.adminHelperFeatures.length ? " (офлайн-кэш)" : "";
+  }
+  renderAdminHelperResults(localAdminHelperSearch(query), query, sourceLabel);
+}
+
+function scheduleAdminHelperSearch() {
+  window.clearTimeout(adminHelperDebounce);
+  adminHelperDebounce = window.setTimeout(() => searchAdminHelper(), 220);
+}
+
+function openAdminHelper() {
+  if (!canShowAdminHelper(state.bootstrap)) return;
+  if (!adminHelperPanel || !adminHelperQuery) return;
+  adminHelperPanel.classList.add("is-open");
+  adminHelperPanel.setAttribute("aria-hidden", "false");
+  adminHelperQuery.focus();
+  searchAdminHelper();
+}
+
+async function openFileExchange() {
+  if (!canShowFileExchange(state.bootstrap)) return;
+  try {
+    await window.__TAURI__.opener.openUrl(fileExchangeSiteUrl());
+  } catch (error) {
+    setStatus(`Не удалось открыть файлообменник: ${error}`);
+  }
+}
+
+function closeAdminHelper() {
+  adminHelperPanel?.classList.remove("is-open");
+  adminHelperPanel?.setAttribute("aria-hidden", "true");
+}
+
+function initAdminHelper() {
+  loadAdminHelperCache();
+  adminHelperQuery?.setAttribute("autocomplete", "off");
+  adminHelperQuery?.setAttribute("data-lpignore", "true");
+  adminHelperQuery?.setAttribute("data-1p-ignore", "true");
+  adminHelperOpen?.addEventListener("click", openAdminHelper);
+  fileExchangeOpen?.addEventListener("click", openFileExchange);
+  adminHelperClose?.addEventListener("click", closeAdminHelper);
+  adminHelperPanel?.addEventListener("click", (event) => {
+    if (event.target === adminHelperPanel) closeAdminHelper();
+  });
+  adminHelperQuery?.addEventListener("input", scheduleAdminHelperSearch);
+  adminHelperQuery?.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      searchAdminHelper({ refresh: true });
+    }
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && adminHelperPanel?.classList.contains("is-open")) {
+      closeAdminHelper();
+    }
+  });
+}
+
 window.addEventListener("DOMContentLoaded", async () => {
   loadSyncSettings();
   attachLoginHandler();
   initFloatingHoverCards();
+  initAdminHelper();
   invoke("get_desktop_log_path").then((path) => {
     auditInfo("desktop_log_ready", "Файл журнала desktop-программы готов.", { path });
   }).catch(() => {});
